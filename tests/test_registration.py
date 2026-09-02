@@ -49,6 +49,15 @@ class Ctx:
         self.unloads.append(callback)
 
 
+class DegradedCtx(Ctx):
+    register_auxiliary_task = None
+
+    def register_hook(self, name, callback):
+        if name == "on_skill_lifecycle":
+            raise ValueError("unsupported hook")
+        self.hooks.append((name, callback))
+
+
 def test_registers_always_on_router_surfaces():
     ctx = Ctx()
 
@@ -65,3 +74,13 @@ def test_registers_always_on_router_surfaces():
     assert ctx.commands[0]["name"] == "skill-router"
     assert ctx.cli_commands[0]["name"] == "skill-router"
     assert len(ctx.unloads) == 1
+
+
+def test_registration_degrades_when_auxiliary_and_lifecycle_features_fail():
+    ctx = DegradedCtx()
+
+    register(ctx)
+
+    assert ctx.aux == []
+    assert {name for name, _ in ctx.hooks} == {"on_session_start", "pre_llm_call"}
+    assert ctx.commands[0]["name"] == "skill-router"

@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import json
 
-from skill_router_plugin import catalog as catalog_module
 from skill_router_plugin.catalog import base_plan_entry, rank_entries, scan_catalog
 
 
-def test_scan_catalog_reads_effective_skills_without_preprocessing(monkeypatch):
+class Compatibility:
+    def __init__(self, content, mode):
+        self.content = content
+        self.mode = mode
+
+    def ensure_skills_tool_registration(self):
+        return True
+
+    def read_visible_skill_files(self, names, *, max_chars):
+        return self.content, self.mode
+
+
+def test_scan_catalog_reads_effective_skills_without_preprocessing():
     listing = json.dumps({
         "success": True,
         "skills": [
@@ -23,15 +34,11 @@ def test_scan_catalog_reads_effective_skills_without_preprocessing(monkeypatch):
             assert (name, args) == ("skills_list", {})
             return listing
 
-    monkeypatch.setattr(
-        catalog_module,
-        "_read_visible_skill_files",
-        lambda names, max_chars: ({
-            "github": "## When to Use\nUse for pull requests and issues.\n## Pitfalls\nAvoid for GitLab."
-        }, "raw-path-current-hermes"),
-    )
+    compatibility = Compatibility({
+        "github": "## When to Use\nUse for pull requests and issues.\n## Pitfalls\nAvoid for GitLab."
+    }, "raw-path-current-hermes")
 
-    catalog = scan_catalog(Ctx())
+    catalog = scan_catalog(Ctx(), compatibility)
 
     assert catalog["count"] == 1
     assert catalog["skills"][0]["name"] == "github"
@@ -40,7 +47,7 @@ def test_scan_catalog_reads_effective_skills_without_preprocessing(monkeypatch):
     assert len(catalog["catalog_hash"]) == 64
 
 
-def test_metadata_only_fallback_keeps_visible_skills(monkeypatch):
+def test_metadata_only_fallback_keeps_visible_skills():
     listing = json.dumps({
         "success": True,
         "skills": [{"name": "github", "description": "Manage GitHub work."}],
@@ -53,16 +60,24 @@ def test_metadata_only_fallback_keeps_visible_skills(monkeypatch):
         def dispatch_tool(self, name, args):
             return listing
 
-    monkeypatch.setattr(
-        catalog_module,
-        "_read_visible_skill_files",
-        lambda names, max_chars: ({}, "metadata-only"),
-    )
-
-    catalog = scan_catalog(Ctx())
+    catalog = scan_catalog(Ctx(), Compatibility({}, "metadata-only"))
 
     assert catalog["count"] == 1
     assert catalog["skills"][0]["content"] == ""
+    assert catalog["reader_mode"] == "metadata-only"
+
+
+def test_missing_skills_list_dispatch_falls_back_without_crashing():
+    class Ctx:
+        def get_config(self, key, default=None):
+            return default
+
+        def dispatch_tool(self, name, args):
+            raise RuntimeError("skills_list unavailable")
+
+    catalog = scan_catalog(Ctx(), Compatibility({}, "raw-path-current-hermes"))
+
+    assert catalog["count"] == 0
     assert catalog["reader_mode"] == "metadata-only"
 
 

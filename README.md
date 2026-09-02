@@ -180,7 +180,9 @@ plugins:
 
 Hermes currently has no documented public API that simultaneously provides exact raw `SKILL.md`, all discovery sources, provenance, and forced cache invalidation.
 
-This plugin uses public `skills_list` as the visibility allowlist, then an isolated current-Hermes path resolver with the same ordered and quarantined iterators to read approved files directly. It never invokes `skill_view` during inventory, so scans cannot run skill setup or alter usage telemetry. If the compatibility adapter is unavailable, routing safely falls back to catalog metadata only. `/skill-router status` reports the active reader mode.
+All version-dependent Hermes imports and path lookup calls are isolated in `skill_router_plugin/compat/hermes.py` and detected by capability rather than version number. This plugin uses public `skills_list` as the visibility allowlist, then the compatibility layer uses the ordered and quarantined Hermes iterators to read approved files directly. It never invokes `skill_view` during inventory, so scans cannot run skill setup or alter usage telemetry. If a required internal API is unavailable or incompatible, routing safely falls back to catalog metadata only.
+
+`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, and auxiliary-task availability.
 
 Additional limitations:
 

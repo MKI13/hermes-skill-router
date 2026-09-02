@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from .catalog import base_plan_entry, scan_catalog
+from .compat import HermesCompatibility
 from .openviking import OpenVikingBridge
 from .planner import analyze_changed_skills, select_skills
 
@@ -23,8 +24,13 @@ _HERMES_SKILL_CACHE_SETTLE_SECONDS = 31.0
 class SkillRouterRuntime:
     """Maintain one independent routing plan for the active Hermes profile."""
 
-    def __init__(self, ctx: Any) -> None:
+    def __init__(
+        self,
+        ctx: Any,
+        compatibility: HermesCompatibility | None = None,
+    ) -> None:
         self.ctx = ctx
+        self.compatibility = compatibility or HermesCompatibility(ctx)
         self.openviking = OpenVikingBridge(ctx)
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -141,7 +147,7 @@ class SkillRouterRuntime:
                 return False
             self._last_scan_monotonic = now
 
-        catalog = scan_catalog(self.ctx)
+        catalog = scan_catalog(self.ctx, self.compatibility)
         snapshot = self._snapshot()
         if not force and catalog["catalog_hash"] == snapshot.get("catalog_hash"):
             return False
@@ -191,7 +197,7 @@ class SkillRouterRuntime:
     def deep_refresh(self, reason: str = "manual") -> dict[str, Any]:
         """Synchronously rebuild changed model-derived plan entries."""
         self.ensure_catalog(force=True)
-        catalog = scan_catalog(self.ctx)
+        catalog = scan_catalog(self.ctx, self.compatibility)
         snapshot = self._snapshot()
         if catalog.get("catalog_hash") != snapshot.get("catalog_hash"):
             self.ensure_catalog(force=True)
@@ -302,6 +308,7 @@ class SkillRouterRuntime:
         return "\n".join([
             "Hermes Skill Router",
             f"Profile: {getattr(self.ctx, 'profile_name', 'default')}",
+            *self.compatibility.status_lines(),
             f"Indexed skills: {len(snapshot.get('entries', []))}",
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",
             f"Catalog scan: {snapshot.get('catalog_scanned_at') or 'never'}",

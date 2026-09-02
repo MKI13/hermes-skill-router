@@ -5,17 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
+    from .skill_router_plugin.compat import HermesCompatibility
     from .skill_router_plugin.runtime import SkillRouterRuntime
 except ImportError:
+    from skill_router_plugin.compat import HermesCompatibility
     from skill_router_plugin.runtime import SkillRouterRuntime
 
 
 def register(ctx) -> None:
     """Register the profile-scoped router, hooks, command, and bundled skill."""
-    runtime = SkillRouterRuntime(ctx)
+    compatibility = HermesCompatibility(ctx)
+    runtime = SkillRouterRuntime(ctx, compatibility)
     skill_path = Path(__file__).parent / "skills" / "skill-router" / "SKILL.md"
 
-    ctx.register_auxiliary_task(
+    compatibility.register_auxiliary_task(
         key="skill_router_planner",
         display_name="Skill Router planner",
         description="Analyze installed skills and route each user task.",
@@ -33,7 +36,7 @@ def register(ctx) -> None:
         max_chars=2000,
     )
     ctx.register_hook("on_session_start", runtime.on_session_start)
-    ctx.register_hook("on_skill_lifecycle", runtime.on_skill_lifecycle)
+    compatibility.register_skill_lifecycle(runtime.on_skill_lifecycle)
     ctx.register_hook("pre_llm_call", runtime.pre_llm_call)
     ctx.register_command(
         name="skill-router",

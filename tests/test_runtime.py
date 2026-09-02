@@ -19,6 +19,21 @@ class State:
         self.values[key] = deepcopy(value)
 
 
+class Compatibility:
+    def __init__(self, status):
+        self.status = status
+
+    def status_lines(self):
+        available = self.status == "full"
+        return [
+            f"Hermes compatibility: {self.status}",
+            f"Raw skill reader: {'available' if available else 'unavailable -> metadata-only'}",
+            f"Plugin skill lookup: {'available' if available else 'unavailable'}",
+            "Lifecycle support: available",
+            "Auxiliary tasks: available",
+        ]
+
+
 class Ctx:
     profile_name = "research"
 
@@ -69,6 +84,28 @@ def test_system_prompt_is_profile_scoped_and_requires_skill_view():
     assert "profile=research" in text
     assert "indexed_skills=1" in text
     assert "skill_view" in text
+
+
+def test_status_reports_full_hermes_compatibility():
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+
+    status = runtime.status_text()
+
+    assert "Hermes compatibility: full" in status
+    assert "Raw skill reader: available" in status
+    assert "Plugin skill lookup: available" in status
+    assert "Lifecycle support: available" in status
+    assert "Auxiliary tasks: available" in status
+
+
+def test_status_reports_degraded_hermes_compatibility():
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("degraded"))
+
+    status = runtime.status_text()
+
+    assert "Hermes compatibility: degraded" in status
+    assert "Raw skill reader: unavailable -> metadata-only" in status
+    assert "Plugin skill lookup: unavailable" in status
 
 
 def test_injected_router_block_omits_untrusted_model_reason(monkeypatch):

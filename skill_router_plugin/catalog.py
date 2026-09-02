@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from pathlib import Path
 from typing import Any, Iterable
+
+from .compat import HermesCompatibility
 
 _ROUTER_SKILLS = {"skill-router", "skill-router:skill-router"}
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
@@ -25,7 +26,10 @@ def _json_object(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def scan_catalog(ctx: Any) -> dict[str, Any]:
+def scan_catalog(
+    ctx: Any,
+    compatibility: HermesCompatibility | None = None,
+) -> dict[str, Any]:
     """Return the host-visible catalog and side-effect-free raw skill content.
 
     The public ``skills_list`` result is the visibility allowlist. Current Hermes
@@ -34,12 +38,14 @@ def scan_catalog(ctx: Any) -> dict[str, Any]:
     bytes directly. If the adapter is unavailable, metadata-only routing is safer
     than invoking ``skill_view`` during inventory.
     """
+    compat = compatibility or HermesCompatibility(ctx)
+    compat.ensure_skills_tool_registration()
     try:
-        import tools.skills_tool  # noqa: F401 - registers skills_list in plugin CLI mode
-    except ImportError:
-        pass
-    listing = _json_object(ctx.dispatch_tool("skills_list", {}))
-    listed = listing.get("skills") if listing.get("success") else []
+        listing = _json_object(ctx.dispatch_tool("skills_list", {}))
+    except Exception:
+        listing = {}
+    listing_available = bool(listing.get("success"))
+    listed = listing.get("skills") if listing_available else []
     metadata_rows = [row for row in listed if isinstance(row, dict)] if isinstance(listed, list) else []
     visible_names = {
         str(row.get("name") or "").strip()
@@ -47,7 +53,13 @@ def scan_catalog(ctx: Any) -> dict[str, Any]:
         if str(row.get("name") or "").strip() not in _ROUTER_SKILLS
     }
     max_chars = _bounded_int(ctx.get_config("max_skill_chars", 20000), 1000, 200000, 20000)
-    raw_content, reader_mode = _read_visible_skill_files(visible_names, max_chars=max_chars)
+    if listing_available:
+        raw_content, reader_mode = compat.read_visible_skill_files(
+            visible_names,
+            max_chars=max_chars,
+        )
+    else:
+        raw_content, reader_mode = {}, "metadata-only"
     records: list[dict[str, Any]] = []
     for metadata in metadata_rows:
         name = str(metadata.get("name") or "").strip()
@@ -81,86 +93,12 @@ def scan_catalog(ctx: Any) -> dict[str, Any]:
     }
 
 
-def _read_visible_skill_files(
-    visible_names: set[str], *, max_chars: int
-) -> tuple[dict[str, str], str]:
-    """Resolve host-approved skill names to files without running skill setup."""
-    content_by_name: dict[str, str] = {}
-    try:
-        from agent.skill_utils import (
-            get_project_skills_dirs,
-            get_scan_ordered_skills_dirs,
-            iter_project_skill_files,
-            iter_skill_index_files,
-        )
-        from hermes_cli.plugins import get_plugin_manager
-
-        project_roots = {_resolved(path) for path in get_project_skills_dirs()}
-        for root in get_scan_ordered_skills_dirs():
-            iterator = (
-                iter_project_skill_files(root)
-                if _resolved(root) in project_roots
-                else iter_skill_index_files(root, "SKILL.md")
-            )
-            for skill_md in iterator:
-                safe_path = _contained_skill_path(Path(skill_md), Path(root))
-                if safe_path is None:
-                    continue
-                content = _read_utf8(safe_path, max_chars)
-                name = _frontmatter_name(content) or safe_path.parent.name
-                if name in visible_names and ":" not in name and name not in content_by_name:
-                    content_by_name[name] = content
-
-        manager = get_plugin_manager()
-        for name in visible_names:
-            if ":" not in name:
-                continue
-            path = manager.find_plugin_skill(name)
-            if path is not None and Path(path).is_file():
-                content_by_name[name] = _read_utf8(Path(path), max_chars)
-        mode = "raw-path-current-hermes"
-    except Exception:
-        mode = "metadata-only"
-    return content_by_name, mode
-
-
-def _contained_skill_path(path: Path, root: Path) -> Path | None:
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root.resolve(strict=True))
-    except (OSError, ValueError):
-        return None
-    return resolved if resolved.is_file() else None
-
-
-def _read_utf8(path: Path, max_chars: int) -> str:
-    with path.open("r", encoding="utf-8-sig", errors="replace") as handle:
-        return handle.read(max_chars)
-
-
-def _frontmatter_name(content: str) -> str:
-    if not content.startswith("---"):
-        return ""
-    end = content.find("\n---", 3)
-    if end < 0:
-        return ""
-    match = re.search(r"(?m)^name:\s*['\"]?([^'\"#\n]+)", content[3:end])
-    return match.group(1).strip() if match else ""
-
-
 def _bounded_int(value: Any, minimum: int, maximum: int, default: int) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = default
     return max(minimum, min(parsed, maximum))
-
-
-def _resolved(path: Any) -> str:
-    try:
-        return str(Path(path).expanduser().resolve())
-    except OSError:
-        return str(Path(path).expanduser())
 
 
 def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
