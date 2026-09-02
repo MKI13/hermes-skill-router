@@ -42,7 +42,7 @@ def register(ctx) -> None:
         name="skill-router",
         handler=runtime.command,
         description="Inspect, refresh, or test the profile skill routing plan.",
-        args_hint="[status|refresh|plan|recommend <task>]",
+        args_hint="[status|refresh|plan|inspect <skill>|recommend <task>]",
     )
 
     def setup_cli(parser) -> None:
@@ -51,6 +51,8 @@ def register(ctx) -> None:
         refresh = commands.add_parser("refresh", help="Refresh and analyze the skill plan")
         refresh.add_argument("--wait", action="store_true", help="Wait for deep model analysis")
         commands.add_parser("plan", help="Print the compact routing plan")
+        inspect = commands.add_parser("inspect", help="Show cached readiness evidence for one skill")
+        inspect.add_argument("skill_name")
         recommend = commands.add_parser("recommend", help="Select skills for a sample task")
         recommend.add_argument("task", nargs="+")
 
@@ -62,6 +64,9 @@ def register(ctx) -> None:
         if action == "plan":
             print(runtime.plan_text())
             return 0
+        if action == "inspect":
+            print(runtime.command("inspect " + args.skill_name))
+            return 0
         if action == "recommend":
             print(runtime.command("recommend " + " ".join(args.task)))
             return 0
@@ -71,7 +76,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|refresh|plan|recommend}")
+        print("Usage: hermes skill-router {status|refresh|plan|inspect|recommend}")
         return 2
 
     ctx.register_cli_command(

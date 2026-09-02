@@ -72,6 +72,7 @@ def test_registers_always_on_router_surfaces():
         "pre_llm_call",
     }
     assert ctx.commands[0]["name"] == "skill-router"
+    assert "inspect <skill>" in ctx.commands[0]["args_hint"]
     assert ctx.cli_commands[0]["name"] == "skill-router"
     assert len(ctx.unloads) == 1
 

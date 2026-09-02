@@ -82,6 +82,28 @@ def test_all_expected_hermes_apis_report_full_status():
     ]
 
 
+def test_readiness_hints_normalize_passive_hermes_metadata():
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+
+    hints = compatibility.readiness_hints({
+        "readiness_status": "setup_needed",
+        "setup_needed": True,
+        "requirements": {"commands": ["git"]},
+    })
+
+    assert hints == {
+        "status": "setup_required",
+        "setup_needed": True,
+        "requirements": {"commands": ["git"]},
+    }
+
+
 def test_agent_skill_utils_completely_unavailable_is_degraded():
     compatibility = HermesCompatibility(
         FullCtx(),

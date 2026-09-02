@@ -181,7 +181,9 @@ def select_skills(
                 instructions=(
                     f"Select zero to {safe_limit} skills for the user's task. Consider every "
                     "entry in the ranked candidate catalog, exact triggers, exclusions, readiness, "
-                    "complementary skills, and execution order. Choose one primary skill when "
+                    "complementary skills, and execution order. Prefer ready over equally relevant "
+                    "unknown, setup-required, dependency-missing, broken, or disabled skills. "
+                    "Choose one primary skill when "
                     "a match exists and only genuinely useful supporting skills. Never invent "
                     "a name. An explicitly requested installed skill must be selected. Return "
                     "an empty selection when no skill improves the result."

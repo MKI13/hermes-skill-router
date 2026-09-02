@@ -14,11 +14,28 @@ from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .openviking import OpenVikingBridge
 from .planner import analyze_changed_skills, select_skills
+from .readiness import (
+    BROKEN,
+    DEPENDENCY_MISSING,
+    DISABLED,
+    READY,
+    READINESS_STATUSES,
+    SETUP_REQUIRED,
+    UNKNOWN,
+)
 
 logger = logging.getLogger(__name__)
 _STATE_KEY = "router.snapshot"
 _REBUILD_ACTIONS = {"created", "installed", "patched", "edited", "archived", "stale", "restored"}
 _HERMES_SKILL_CACHE_SETTLE_SECONDS = 31.0
+_READINESS_LABELS = {
+    READY: "Ready",
+    UNKNOWN: "Unknown",
+    SETUP_REQUIRED: "Setup required",
+    DEPENDENCY_MISSING: "Dependency missing",
+    BROKEN: "Broken",
+    DISABLED: "Disabled",
+}
 
 
 class SkillRouterRuntime:
@@ -127,7 +144,7 @@ class SkillRouterRuntime:
 
         lines = [f"[Skill Router method={method} catalog={str(snapshot.get('catalog_hash', ''))[:12]}]"]
         for item in selected:
-            readiness = " setup-needed" if item.get("setup_needed") else ""
+            readiness = _routing_readiness_suffix(item)
             lines.append(
                 f"{item['order']}. {item['role'].upper()}: {item['name']}{readiness}"
             )
@@ -161,7 +178,15 @@ class SkillRouterRuntime:
         for record in catalog["skills"]:
             existing = previous.get(record["name"])
             if existing and existing.get("content_hash") == record["content_hash"]:
-                entries.append(existing)
+                entries.append({
+                    **existing,
+                    "readiness_status": record.get("readiness_status", "unknown"),
+                    "readiness_hash": record.get("readiness_hash", ""),
+                    "setup_needed": bool(record.get("setup_needed")),
+                    "requirements": record.get("requirements", {}),
+                    "dependency_checks": record.get("dependency_checks", []),
+                    "readiness_reasons": record.get("readiness_reasons", []),
+                })
             else:
                 entries.append(base_plan_entry(record))
         new_snapshot = {
@@ -267,6 +292,12 @@ class SkillRouterRuntime:
         action = args[0].casefold() if args else "status"
         if action == "status":
             return self.status_text()
+        if action == "inspect":
+            name = " ".join(args[1:]).strip()
+            if not name:
+                return "Usage: /skill-router inspect <skill-name>"
+            self.ensure_catalog(force=False)
+            return self.inspect_text(name)
         if action == "refresh":
             changed = self.ensure_catalog(force=True)
             started = self.request_deep_refresh("manual-slash-command")
@@ -294,10 +325,11 @@ class SkillRouterRuntime:
             if not selected:
                 return f"No skill match ({method})."
             return f"Method: {method}\n" + "\n".join(
-                f"{item['order']}. {item['name']} ({item['role']}): {item['reason']}"
+                f"{item['order']}. {item['name']} ({item['role']}, "
+                f"{item.get('readiness_status', UNKNOWN)}): {item['reason']}"
                 for item in selected
             )
-        return "Usage: /skill-router [status|refresh|plan|recommend <task>]"
+        return "Usage: /skill-router [status|refresh|plan|inspect <skill>|recommend <task>]"
 
     def status_text(self) -> str:
         """Render profile plan status."""
@@ -305,11 +337,26 @@ class SkillRouterRuntime:
         report = snapshot.get("last_report") if isinstance(snapshot.get("last_report"), dict) else {}
         ov_report = report.get("openviking") if isinstance(report.get("openviking"), dict) else {}
         running = bool(self._worker and self._worker.is_alive())
+        entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+        readiness_counts = {status: 0 for status in READINESS_STATUSES}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get("readiness_status") or UNKNOWN)
+            readiness_counts[status if status in readiness_counts else UNKNOWN] += 1
+        readiness_lines = [
+            "Skill readiness:",
+            *[
+                f"{_READINESS_LABELS[status]}: {readiness_counts[status]}"
+                for status in (READY, UNKNOWN, SETUP_REQUIRED, DEPENDENCY_MISSING, BROKEN, DISABLED)
+            ],
+        ]
         return "\n".join([
             "Hermes Skill Router",
             f"Profile: {getattr(self.ctx, 'profile_name', 'default')}",
             *self.compatibility.status_lines(),
-            f"Indexed skills: {len(snapshot.get('entries', []))}",
+            f"Indexed skills: {len(entries)}",
+            *readiness_lines,
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",
             f"Catalog scan: {snapshot.get('catalog_scanned_at') or 'never'}",
             f"Skill reader: {snapshot.get('reader_mode') or 'unknown'}",
@@ -332,7 +379,53 @@ class SkillRouterRuntime:
         lines = [f"Skill routing plan ({len(entries)} skills):"]
         for entry in entries:
             triggers = "; ".join(str(value) for value in entry.get("use_when", [])[:3])
-            lines.append(f"- {entry.get('name')}: {triggers or entry.get('description', '')}")
+            status = str(entry.get("readiness_status") or UNKNOWN)
+            lines.append(
+                f"- {entry.get('name')} [{status}]: {triggers or entry.get('description', '')}"
+            )
+        return "\n".join(lines)
+
+    def inspect_text(self, skill_name: str) -> str:
+        """Render cached readiness evidence without exposing configured values."""
+        snapshot = self._snapshot()
+        entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+        entry = next(
+            (
+                item for item in entries
+                if isinstance(item, dict)
+                and str(item.get("name") or "").casefold() == skill_name.casefold()
+            ),
+            None,
+        )
+        if entry is None:
+            return f"Skill not found: {skill_name}"
+        status = str(entry.get("readiness_status") or UNKNOWN)
+        checks = entry.get("dependency_checks") if isinstance(entry.get("dependency_checks"), list) else []
+        lines = [
+            f"Skill: {entry.get('name')}",
+            f"Readiness: {status}",
+            "",
+            "Dependencies:",
+        ]
+        if checks:
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                kind = str(check.get("type") or "dependency").replace("_", " ")
+                name = str(check.get("name") or "unknown")[:200]
+                availability = "available" if check.get("available") else "missing"
+                lines.append(f"{kind} {name}: {availability}")
+        else:
+            lines.append("none declared")
+        lines.append("")
+        lines.append(f"Setup needed: {'true' if entry.get('setup_needed') else 'false'}")
+        reasons = entry.get("readiness_reasons")
+        if isinstance(reasons, list):
+            lines.extend(
+                f"Reason: {str(reason)[:300]}"
+                for reason in reasons[:5]
+                if str(reason).strip()
+            )
         return "\n".join(lines)
 
     def _deep_worker(self) -> None:
@@ -414,8 +507,12 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "works_with": [str(value)[:200] for value in entry.get("works_with", [])[:8]],
             "alternatives": [str(value)[:200] for value in entry.get("alternatives", [])[:8]],
             "analysis": entry.get("analysis", "deterministic"),
-            "readiness_status": entry.get("readiness_status", "unknown"),
+            "readiness_status": entry.get("readiness_status", UNKNOWN),
+            "readiness_hash": entry.get("readiness_hash", ""),
             "setup_needed": bool(entry.get("setup_needed")),
+            "requirements": entry.get("requirements", {}),
+            "dependency_checks": entry.get("dependency_checks", []),
+            "readiness_reasons": entry.get("readiness_reasons", []),
             "openviking_name": entry.get("openviking_name", ""),
             "openviking_hash": entry.get("openviking_hash", ""),
         }
@@ -432,6 +529,8 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "content_hash": entry.get("content_hash", ""),
             "openviking_name": entry.get("openviking_name", ""),
             "openviking_hash": entry.get("openviking_hash", ""),
+            "readiness_status": entry.get("readiness_status", UNKNOWN),
+            "setup_needed": bool(entry.get("setup_needed")),
             "analysis": "deterministic",
         }
         for entry in compact["entries"]
@@ -473,6 +572,8 @@ def _plan_markdown(profile: str, entries: list[dict[str, Any]]) -> str:
             "",
             str(entry.get("description") or ""),
             "",
+            f"Readiness: `{entry.get('readiness_status', UNKNOWN)}`",
+            "",
             "Use when:",
             *[f"- {value}" for value in entry.get("use_when", [])],
             "",
@@ -483,6 +584,19 @@ def _plan_markdown(profile: str, entries: list[dict[str, Any]]) -> str:
             "",
         ])
     return "\n".join(lines)
+
+
+def _routing_readiness_suffix(item: dict[str, Any]) -> str:
+    status = str(item.get("readiness_status") or UNKNOWN)
+    labels = {
+        READY: "",
+        UNKNOWN: " readiness-unknown",
+        SETUP_REQUIRED: " setup-needed",
+        DEPENDENCY_MISSING: " dependency-missing",
+        BROKEN: " broken",
+        DISABLED: " disabled",
+    }
+    return labels.get(status, " readiness-unknown")
 
 
 def _utc_now() -> str:

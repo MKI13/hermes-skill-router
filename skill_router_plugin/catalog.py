@@ -8,9 +8,27 @@ import re
 from typing import Any, Iterable
 
 from .compat import HermesCompatibility
+from .readiness import (
+    BROKEN,
+    DEPENDENCY_MISSING,
+    DISABLED,
+    READY,
+    SETUP_REQUIRED,
+    UNKNOWN,
+    evaluate_readiness,
+    readiness_sort_key,
+)
 
 _ROUTER_SKILLS = {"skill-router", "skill-router:skill-router"}
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
+_READINESS_SCORE_ADJUSTMENT = {
+    READY: 1.0,
+    UNKNOWN: 0.0,
+    SETUP_REQUIRED: -1.0,
+    DEPENDENCY_MISSING: -2.0,
+    BROKEN: -3.0,
+    DISABLED: -4.0,
+}
 _STOP_WORDS = {
     "about", "after", "also", "and", "are", "before", "das", "der", "die",
     "ein", "eine", "for", "from", "für", "ist", "mit", "oder", "the", "this",
@@ -68,6 +86,16 @@ def scan_catalog(
         description = str(metadata.get("description") or "").strip()[:1000]
         content = raw_content.get(name, "")
         hash_input = f"{name}\0{description}\0{content}"
+        readiness = evaluate_readiness(
+            content=content,
+            visible_skill_names=visible_names,
+            metadata_hints=compat.readiness_hints(metadata),
+            get_config=ctx.get_config,
+            content_expected=reader_mode == "raw-path-current-hermes",
+        )
+        readiness_hash = hashlib.sha256(
+            json.dumps(readiness, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
         records.append({
             "name": name,
             "description": description,
@@ -76,13 +104,13 @@ def scan_catalog(
             "related_skills": [],
             "content": content,
             "content_hash": hashlib.sha256(hash_input.encode("utf-8")).hexdigest(),
-            "readiness_status": "unknown",
-            "setup_needed": False,
+            "readiness_hash": readiness_hash,
+            **readiness,
         })
 
     records.sort(key=lambda item: item["name"].casefold())
     fingerprint_source = "\n".join(
-        f"{item['name']}\0{item['content_hash']}\0{item['readiness_status']}"
+        f"{item['name']}\0{item['content_hash']}\0{item['readiness_hash']}"
         for item in records
     )
     return {
@@ -125,8 +153,12 @@ def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
         "keywords": terms[:40],
         "works_with": _strings(record.get("related_skills"))[:12],
         "alternatives": [],
-        "readiness_status": record.get("readiness_status", "unknown"),
+        "readiness_status": record.get("readiness_status", UNKNOWN),
+        "readiness_hash": record.get("readiness_hash", ""),
         "setup_needed": bool(record.get("setup_needed")),
+        "requirements": record.get("requirements", {}),
+        "dependency_checks": record.get("dependency_checks", []),
+        "readiness_reasons": record.get("readiness_reasons", []),
         "analysis": "deterministic",
     }
 
@@ -155,10 +187,17 @@ def rank_entries(task: str, entries: Iterable[dict[str, Any]]) -> list[tuple[flo
             pass
         if name.casefold() in normalized_task:
             score += 12.0
-        if entry.get("setup_needed"):
-            score -= 1.0
+        status = str(entry.get("readiness_status") or UNKNOWN)
+        score += _READINESS_SCORE_ADJUSTMENT.get(status, 0.0)
         ranked.append((score, entry))
-    return sorted(ranked, key=lambda item: (-item[0], str(item[1].get("name", "")).casefold()))
+    return sorted(
+        ranked,
+        key=lambda item: (
+            -item[0],
+            readiness_sort_key(item[1]),
+            str(item[1].get("name", "")).casefold(),
+        ),
+    )
 
 
 def compact_entry(entry: dict[str, Any]) -> str:

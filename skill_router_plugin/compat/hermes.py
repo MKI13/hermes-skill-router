@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import importlib
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 _RAW_API_NAMES = (
     "get_project_skills_dirs",
@@ -86,6 +86,27 @@ class HermesCompatibility:
             f"Lifecycle support: {lifecycle}",
             f"Auxiliary tasks: {auxiliary}",
         ]
+
+    def readiness_hints(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        """Normalize passive readiness fields exposed by Hermes skill metadata."""
+        hints: dict[str, Any] = {}
+        raw_status = str(metadata.get("readiness_status") or "").casefold()
+        status_map = {
+            "available": "ready",
+            "ready": "ready",
+            "setup_needed": "setup_required",
+            "setup_required": "setup_required",
+            "unsupported": "disabled",
+            "disabled": "disabled",
+            "broken": "broken",
+            "unknown": "unknown",
+        }
+        if raw_status in status_map:
+            hints["status"] = status_map[raw_status]
+        for key in ("setup_needed", "setup_required", "disabled", "requirements"):
+            if key in metadata:
+                hints[key] = metadata.get(key)
+        return hints
 
     def ensure_skills_tool_registration(self) -> bool:
         """Load Hermes' skills tool module when plugin CLI mode needs registration."""

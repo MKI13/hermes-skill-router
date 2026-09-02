@@ -34,7 +34,7 @@ def record(name="github", content_hash="new"):
         "related_skills": [],
         "content": "## When to Use\nUse for pull requests.",
         "content_hash": content_hash,
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     }
 
@@ -122,7 +122,7 @@ def test_model_router_rejects_invented_names_and_preserves_order():
         "use_when": ["pull requests"],
         "avoid_when": [],
         "works_with": [],
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     }]
 
@@ -154,7 +154,7 @@ def test_explicit_skill_name_survives_bounded_candidate_catalog():
             "use_when": [],
             "avoid_when": [],
             "works_with": [],
-            "readiness_status": "available",
+            "readiness_status": "ready",
             "setup_needed": False,
         }
         for index in range(40)
@@ -164,7 +164,7 @@ def test_explicit_skill_name_survives_bounded_candidate_catalog():
         "use_when": [],
         "avoid_when": [],
         "works_with": [],
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     }]
 
@@ -191,7 +191,7 @@ def test_deterministic_router_returns_only_positive_matches():
         "avoid_when": [],
         "keywords": ["github", "pull"],
         "works_with": [],
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     }]
 
@@ -208,6 +208,33 @@ def test_deterministic_router_returns_only_positive_matches():
     assert selected[0]["name"] == "github"
 
 
+def test_ready_skill_is_preferred_over_equally_relevant_unready_skill():
+    ctx = FakeCtx([])
+    common = {
+        "description": "Deploy the application workflow.",
+        "use_when": ["Deploy application"],
+        "avoid_when": [],
+        "keywords": ["deploy", "application"],
+        "works_with": [],
+        "setup_needed": False,
+    }
+    entries = [
+        {**common, "name": "alpha", "readiness_status": "dependency_missing"},
+        {**common, "name": "beta", "readiness_status": "ready"},
+    ]
+
+    selected, _method = select_skills(
+        ctx,
+        "Deploy the application",
+        entries,
+        mode="deterministic",
+        limit=2,
+        catalog_chars=4000,
+    )
+
+    assert [item["name"] for item in selected] == ["beta", "alpha"]
+
+
 def test_deterministic_router_uses_openviking_evidence():
     ctx = FakeCtx([])
     entries = [{
@@ -218,7 +245,7 @@ def test_deterministic_router_uses_openviking_evidence():
         "keywords": [],
         "works_with": [],
         "openviking_score": 0.9,
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     }]
 

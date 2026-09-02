@@ -19,11 +19,12 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 1. **Install/enable:** the plugin registers an always-on bounded system-prompt rule, lifecycle hooks, commands, and a `skill_router_planner` auxiliary task.
 2. **Initial plan:** `hermes skill-router refresh --wait` scans and analyzes the current profile immediately. Without the command, the first new session creates a deterministic base plan and starts deep analysis in the background.
 3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering.
-4. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
-5. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
-6. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
-7. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each selected skill before doing the task.
-8. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+4. **Readiness:** declared command, Python-module, skill, and configuration requirements are checked passively during catalog refresh and cached with the plan. No setup action is executed.
+5. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
+6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
+7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
+8. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each selected skill before doing the task.
+9. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
 Each Hermes profile stores an independent plan through `ctx.state`; profiles never inherit another profile's routing decisions.
 
@@ -127,6 +128,7 @@ Inside a session:
 /skill-router status
 /skill-router refresh
 /skill-router plan
+/skill-router inspect github
 /skill-router recommend research current inference providers
 ```
 
@@ -136,8 +138,25 @@ From the terminal:
 hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
+hermes skill-router inspect github
 hermes skill-router recommend research current inference providers
 ```
+
+## Readiness declarations
+
+A skill can declare passive requirements in its `SKILL.md` frontmatter:
+
+```yaml
+requirements:
+  commands: [git, gh]
+  python_modules: [requests]
+  skills: [github]
+  config: [GITHUB_TOKEN]
+```
+
+Hermes' legacy `prerequisites.commands` and `prerequisites.env_vars` fields are also recognized. A skill with no declaration remains `unknown`; it is never assumed ready. Missing commands, modules, or skills produce `dependency_missing`. Missing declared configuration or `setup_required: true` produces `setup_required`. The router reports names and availability only and never prints configured values, installs dependencies, logs in, or changes configuration.
+
+Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness is recalculated with catalog refreshes rather than on every turn.
 
 ## Configuration
 

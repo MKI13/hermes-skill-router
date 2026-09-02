@@ -40,6 +40,7 @@ Use the plugin command inside a Hermes conversation:
 /skill-router status
 /skill-router refresh
 /skill-router plan
+/skill-router inspect github
 /skill-router recommend prepare a release and publish it on GitHub
 ```
 
@@ -51,7 +52,8 @@ The router itself runs automatically before ordinary user requests. A manual com
 |---|---|
 | `/skill-router status` | Show profile, catalog hash, analysis time, and failures. |
 | `/skill-router refresh` | Force a catalog scan and queue deep analysis. |
-| `/skill-router plan` | Show compact trigger rules for indexed skills. |
+| `/skill-router plan` | Show compact trigger rules and readiness for indexed skills. |
+| `/skill-router inspect <skill>` | Show cached dependency and setup evidence without secret values. |
 | `/skill-router recommend <task>` | Test routing without performing the task. |
 
 Routing modes are configured under `plugins.entries.skill-router.settings.routing_mode`:

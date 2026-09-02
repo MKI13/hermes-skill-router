@@ -16,6 +16,9 @@ class Compatibility:
     def read_visible_skill_files(self, names, *, max_chars):
         return self.content, self.mode
 
+    def readiness_hints(self, metadata):
+        return {}
+
 
 def test_scan_catalog_reads_effective_skills_without_preprocessing():
     listing = json.dumps({
@@ -90,7 +93,7 @@ def test_base_plan_extracts_triggers_and_ranker_prefers_matching_skill():
         "related_skills": [],
         "content": "## When to Use\nUse for pull requests.\n## Pitfalls\nAvoid for GitLab.",
         "content_hash": "a",
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     })
     pdf = base_plan_entry({
@@ -101,7 +104,7 @@ def test_base_plan_extracts_triggers_and_ranker_prefers_matching_skill():
         "related_skills": [],
         "content": "## When to Use\nUse for PDF files.",
         "content_hash": "b",
-        "readiness_status": "available",
+        "readiness_status": "ready",
         "setup_needed": False,
     })
 

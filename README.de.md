@@ -19,11 +19,12 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 1. Das Plugin registriert einen kurzen dauerhaften Systemhinweis, Lifecycle-Hooks, Befehle und den Hilfsmodell-Task `skill_router_planner`.
 2. `hermes skill-router refresh --wait` erstellt direkt nach der Installation den ersten vollständigen Plan. Ohne diesen Befehl erzeugt die erste neue Session einen Basisplan und startet die tiefere Analyse im Hintergrund.
 3. Hermes liefert den effektiven Katalog aus vertrauenswürdigen Projekt-Skills, lokalen Profil-Skills, externen Verzeichnissen und aktiven Plugin-Skills.
-4. Nur neue oder geänderte Skill-Dokumente werden erneut analysiert.
-5. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profile}/plan.md`.
-6. Vor jeder Aufgabe liefert OpenViking semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge.
-7. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die ausgewählten Skills nativ mit `skill_view`.
-8. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+4. Deklarierte Befehls-, Python-Modul-, Skill- und Konfigurationsanforderungen werden beim Katalog-Refresh passiv geprüft und mit dem Plan gespeichert. Der Router führt kein Setup aus.
+5. Nur neue oder geänderte Skill-Dokumente werden erneut analysiert.
+6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profile}/plan.md`.
+7. Vor jeder Aufgabe liefert OpenViking semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge.
+8. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die ausgewählten Skills nativ mit `skill_view`.
+9. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
 Jedes Hermes-Profil besitzt einen eigenen Plan. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
 
@@ -94,6 +95,7 @@ In einer Session:
 /skill-router status
 /skill-router refresh
 /skill-router plan
+/skill-router inspect github
 /skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
 
@@ -103,8 +105,25 @@ Im Terminal:
 hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
+hermes skill-router inspect github
 hermes skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
+
+## Readiness-Deklarationen
+
+Ein Skill kann passive Anforderungen im Frontmatter seiner `SKILL.md` deklarieren:
+
+```yaml
+requirements:
+  commands: [git, gh]
+  python_modules: [requests]
+  skills: [github]
+  config: [GITHUB_TOKEN]
+```
+
+Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars` werden ebenfalls erkannt. Ohne Deklaration bleibt ein Skill `unknown`; er wird nicht automatisch als einsatzbereit betrachtet. Fehlende Befehle, Module oder Skills ergeben `dependency_missing`. Fehlende deklarierte Konfiguration oder `setup_required: true` ergeben `setup_required`. Der Router zeigt nur Namen und Verfügbarkeit an und gibt niemals konfigurierte Werte aus, installiert nichts, meldet sich nirgendwo an und verändert keine Konfiguration.
+
+`/skill-router inspect <skill-name>` zeigt die gespeicherten Prüfergebnisse. Die Readiness wird beim Katalog-Refresh statt bei jedem Turn neu berechnet.
 
 ## Einstellungen
 
