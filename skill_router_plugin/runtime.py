@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any
 
+from .audit import SkillExecutionAudit
 from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .openviking import OpenVikingBridge
@@ -49,6 +50,7 @@ class SkillRouterRuntime:
         self.ctx = ctx
         self.compatibility = compatibility or HermesCompatibility(ctx)
         self.openviking = OpenVikingBridge(ctx)
+        self.audit = SkillExecutionAudit(ctx)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
@@ -102,8 +104,23 @@ class SkillRouterRuntime:
             return
         self.request_deep_refresh(f"lifecycle:{action}:{skill_name}")
 
-    def pre_llm_call(self, user_message: str = "", **kwargs: Any) -> str | None:
-        """Inject ordered skill recommendations into the current user turn."""
+    def on_post_tool_call(self, **kwargs: Any) -> None:
+        """Observe sanitized ``skill_view`` completion metadata."""
+        self.audit.observe_tool_call(**kwargs)
+
+    def on_post_llm_call(self, **kwargs: Any) -> None:
+        """Finalize the matching audit entry after a completed turn."""
+        self.audit.finalize_turn(**kwargs)
+
+    def pre_llm_call(
+        self,
+        user_message: str = "",
+        task_id: str = "",
+        turn_id: str = "",
+        session_id: str = "",
+        **kwargs: Any,
+    ) -> str | None:
+        """Inject recommendations and retain only compact routing metadata."""
         del kwargs
         task = str(user_message or "").strip()
         if not task:
@@ -134,6 +151,16 @@ class SkillRouterRuntime:
                 "[Skill Router]\nRouting failed for this turn. Inspect skills_list before "
                 "executing and load every relevant skill with skill_view.\n[/Skill Router]"
             )
+
+        self.audit.record_decision(
+            task=task,
+            task_id=task_id,
+            turn_id=turn_id,
+            session_id=session_id,
+            method=method,
+            recommended=selected,
+            execution_observable=self.compatibility.capabilities.skill_execution_audit,
+        )
 
         if not selected:
             return (
@@ -292,6 +319,19 @@ class SkillRouterRuntime:
         action = args[0].casefold() if args else "status"
         if action == "status":
             return self.status_text()
+        if action == "audit":
+            detail = args[1].casefold() if len(args) > 1 else ""
+            if detail == "last":
+                return self.audit.last_text()
+            if not detail:
+                return self.audit.summary_text(20)
+            try:
+                limit = int(detail)
+            except ValueError:
+                return "Usage: /skill-router audit [last|1-1000]"
+            if limit < 1 or limit > 1000:
+                return "Usage: /skill-router audit [last|1-1000]"
+            return self.audit.summary_text(limit)
         if action == "inspect":
             name = " ".join(args[1:]).strip()
             if not name:
@@ -329,7 +369,10 @@ class SkillRouterRuntime:
                 f"{item.get('readiness_status', UNKNOWN)}): {item['reason']}"
                 for item in selected
             )
-        return "Usage: /skill-router [status|refresh|plan|inspect <skill>|recommend <task>]"
+        return (
+            "Usage: /skill-router "
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|recommend <task>]"
+        )
 
     def status_text(self) -> str:
         """Render profile plan status."""
@@ -344,6 +387,9 @@ class SkillRouterRuntime:
                 continue
             status = str(entry.get("readiness_status") or UNKNOWN)
             readiness_counts[status if status in readiness_counts else UNKNOWN] += 1
+        _audit_availability, audit_entries, last_audit = self.audit.status_fields(
+            available=self.compatibility.capabilities.skill_execution_audit
+        )
         readiness_lines = [
             "Skill readiness:",
             *[
@@ -355,6 +401,8 @@ class SkillRouterRuntime:
             "Hermes Skill Router",
             f"Profile: {getattr(self.ctx, 'profile_name', 'default')}",
             *self.compatibility.status_lines(),
+            f"Audit entries: {audit_entries}",
+            f"Last audit: {last_audit}",
             f"Indexed skills: {len(entries)}",
             *readiness_lines,
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",

@@ -25,6 +25,7 @@ class CompatibilityCapabilities:
     skill_lifecycle: bool
     auxiliary_tasks: bool
     skills_tool_bootstrap: bool
+    skill_execution_audit: bool
     issues: tuple[str, ...]
 
     @property
@@ -35,6 +36,7 @@ class CompatibilityCapabilities:
             self.plugin_skill_lookup,
             self.skill_lifecycle,
             self.auxiliary_tasks,
+            self.skill_execution_audit,
         )
         return "full" if all(required) else "degraded"
 
@@ -57,6 +59,7 @@ class HermesCompatibility:
         self._plugin_lookup = False
         self._skill_lifecycle = callable(getattr(ctx, "register_hook", None))
         self._auxiliary_tasks = callable(getattr(ctx, "register_auxiliary_task", None))
+        self._skill_execution_audit = callable(getattr(ctx, "register_hook", None))
         self._skills_tool_bootstrap = False
         self._detect_internal_apis()
 
@@ -69,6 +72,7 @@ class HermesCompatibility:
             skill_lifecycle=self._skill_lifecycle,
             auxiliary_tasks=self._auxiliary_tasks,
             skills_tool_bootstrap=self._skills_tool_bootstrap,
+            skill_execution_audit=self._skill_execution_audit,
             issues=tuple(self._issues),
         )
 
@@ -79,12 +83,14 @@ class HermesCompatibility:
         plugin = "available" if capabilities.plugin_skill_lookup else "unavailable"
         lifecycle = "available" if capabilities.skill_lifecycle else "unavailable"
         auxiliary = "available" if capabilities.auxiliary_tasks else "unavailable"
+        audit = "available" if capabilities.skill_execution_audit else "unavailable"
         return [
             f"Hermes compatibility: {capabilities.status}",
             f"Raw skill reader: {raw}",
             f"Plugin skill lookup: {plugin}",
             f"Lifecycle support: {lifecycle}",
             f"Auxiliary tasks: {auxiliary}",
+            f"Skill execution audit: {audit}",
         ]
 
     def readiness_hints(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -141,6 +147,43 @@ class HermesCompatibility:
         except Exception as exc:
             self._skill_lifecycle = False
             self._record_issue("skill lifecycle registration", exc)
+            return False
+        return True
+
+    def register_skill_execution_audit(
+        self,
+        post_tool_callback: Callable[..., Any],
+        post_llm_callback: Callable[..., Any],
+    ) -> bool:
+        """Register passive tool and turn observers when both hooks are accepted."""
+        if not self._skill_execution_audit:
+            return False
+
+        def on_post_tool_call(**kwargs: Any) -> None:
+            if self._skill_execution_audit:
+                post_tool_callback(
+                    tool_name=kwargs.get("tool_name", ""),
+                    args=kwargs.get("args"),
+                    task_id=kwargs.get("task_id", ""),
+                    turn_id=kwargs.get("turn_id", ""),
+                    session_id=kwargs.get("session_id", ""),
+                    status=kwargs.get("status", ""),
+                )
+
+        def on_post_llm_call(**kwargs: Any) -> None:
+            if self._skill_execution_audit:
+                post_llm_callback(
+                    task_id=kwargs.get("task_id", ""),
+                    turn_id=kwargs.get("turn_id", ""),
+                    session_id=kwargs.get("session_id", ""),
+                )
+
+        try:
+            self.ctx.register_hook("post_tool_call", on_post_tool_call)
+            self.ctx.register_hook("post_llm_call", on_post_llm_call)
+        except Exception as exc:
+            self._skill_execution_audit = False
+            self._record_issue("skill execution audit registration", exc)
             return False
         return True
 

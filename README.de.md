@@ -24,9 +24,10 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profile}/plan.md`.
 7. Vor jeder Aufgabe liefert OpenViking semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge.
 8. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die ausgewählten Skills nativ mit `skill_view`.
-9. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+9. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe passiv der Routing-Entscheidung zu. Der Audit blockiert nichts, wiederholt nichts und verändert kein Ranking.
+10. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
-Jedes Hermes-Profil besitzt einen eigenen Plan. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
+Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
 
 ## Kompatibilität
 
@@ -96,6 +97,8 @@ In einer Session:
 /skill-router refresh
 /skill-router plan
 /skill-router inspect github
+/skill-router audit
+/skill-router audit last
 /skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
 
@@ -106,6 +109,8 @@ hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
 hermes skill-router inspect github
+hermes skill-router audit
+hermes skill-router audit last
 hermes skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
 
@@ -125,6 +130,12 @@ Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars`
 
 `/skill-router inspect <skill-name>` zeigt die gespeicherten Prüfergebnisse. Die Readiness wird beim Katalog-Refresh statt bei jedem Turn neu berechnet.
 
+## Routing-Ausführungs-Audit
+
+Für jeden gerouteten Turn speichert der Router Task-Hash, undurchsichtige Hermes-Task-/Turn-/Session-IDs, Routing-Methode, geordnete Skill-Namen und Rollen, erfolgreiche oder fehlgeschlagene `skill_view`-Beobachtungen, Ergebnis und den Ladezustand des Primary-Skills. Mögliche Ergebnisse sind `complete`, `partial`, `missed`, `not_applicable` und `unknown`. Ohne beide benötigten Observer-Hooks oder bei abgebrochener Finalisierung bleibt die Bewertung `unknown`.
+
+`/skill-router audit` fasst die letzten 20 Einträge zusammen, `/skill-router audit last` zeigt die letzte Empfehlung mit Ladeergebnis und `/skill-router audit N` fasst die letzten `N` Einträge zusammen. Die Historie ist profilspezifisch und begrenzt. Nur ein SHA-256-Task-Hash bleibt erhalten; Prompts, Task-Previews, Antworten, Skill-Inhalte, Tool-Ergebnisse, Fehlermeldungen, Dateien und Zugangsdaten werden nicht gespeichert.
+
 ## Einstellungen
 
 ```yaml
@@ -137,6 +148,7 @@ plugins:
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
+        max_audit_entries: 100          # begrenzt auf 10-1000
         max_skill_chars: 20000
         analysis_batch_size: 6
         analysis_model_timeout_seconds: 25
@@ -154,11 +166,12 @@ plugins:
 ## Sicherheit und bekannte Grenzen
 
 - OpenViking liefert nur Retrieval-Hinweise und Skill-Namen. Die dort gespeicherte Kopie wird nicht direkt als ausführbare Anweisung eingefügt.
+- Die Audit-Observer verwerfen Prompt-, Antwort-, Tool-Ergebnis- und Fehlerdaten bereits an der Compatibility-Grenze. Persistiert werden nur Identifikatoren, Task-Hashes, Skill-Namen, Rollen, Reihenfolge, Zeitpunkte, Statuswerte und Ergebnisse.
 - Entfernte Spiegel werden nur gelöscht, wenn ihr Name zuvor als Router-Eigentum im Profilzustand gespeichert wurde.
 - Die HTTP-Brücke blockiert URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, Metadaten-/Link-Local-Ziele und übergroße Antworten. Zugangsdaten außerhalb von Loopback erfordern HTTPS.
 - Das Hilfsmodell erhält Skill-Dokumente ausdrücklich als nicht vertrauenswürdige Analysedaten.
 - Hermes besitzt derzeit keine öffentliche Plugin-API, die gleichzeitig exakte Rohdateien, alle Quellen, Provenienz und eine erzwungene Cache-Aktualisierung anbietet. Alle versionsabhängigen Hermes-Imports und Pfadzugriffe liegen deshalb in `skill_router_plugin/compat/hermes.py` und werden über Feature Detection geprüft. Fehlt eine benötigte interne API oder ist sie inkompatibel, verwendet der Router ausschließlich Katalogmetadaten.
-- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook und Auxiliary Tasks.
+- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook, Auxiliary Tasks und Skill-Ausführungs-Audit. Der Audit benötigt die öffentlichen Hooks `post_tool_call` und `post_llm_call`; fehlen sie, bleibt das Routing unverändert aktiv.
 - Der Lifecycle-Hook meldet derzeit kein Löschen oder Deinstallieren. Die regelmäßige Katalogprüfung erkennt solche Änderungen später.
 - Änderungen innerhalb einer `SKILL.md` können wegen Hermes-Cachezeiten ungefähr 30 Sekunden verzögert erscheinen.
 - Ein bereits bestehender System-Prompt wird aus Cache-Gründen nicht verändert. Die dynamische Empfehlung wird trotzdem bei jedem Turn über `pre_llm_call` ergänzt.

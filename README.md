@@ -24,9 +24,10 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
 7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
 8. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each selected skill before doing the task.
-9. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+9. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls with each routing decision. The audit is passive and never blocks, retries, or changes ranking.
+10. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
-Each Hermes profile stores an independent plan through `ctx.state`; profiles never inherit another profile's routing decisions.
+Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
 
 ## Requirements
 
@@ -129,6 +130,8 @@ Inside a session:
 /skill-router refresh
 /skill-router plan
 /skill-router inspect github
+/skill-router audit
+/skill-router audit last
 /skill-router recommend research current inference providers
 ```
 
@@ -139,6 +142,8 @@ hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
 hermes skill-router inspect github
+hermes skill-router audit
+hermes skill-router audit last
 hermes skill-router recommend research current inference providers
 ```
 
@@ -158,6 +163,12 @@ Hermes' legacy `prerequisites.commands` and `prerequisites.env_vars` fields are 
 
 Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness is recalculated with catalog refreshes rather than on every turn.
 
+## Routing execution audit
+
+Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, ordered recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
+
+`/skill-router audit` summarizes the latest 20 entries, `/skill-router audit last` shows the latest recommendation and load result, and `/skill-router audit N` summarizes the latest `N` entries. The history is profile-local and bounded. Only a SHA-256 task hash is retained; prompts, task previews, responses, skill contents, tool results, errors, files, and credentials are never stored.
+
 ## Configuration
 
 Settings live under the active profile:
@@ -172,6 +183,7 @@ plugins:
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
+        max_audit_entries: 100          # clamped to 10-1000
         max_skill_chars: 20000
         analysis_batch_size: 6
         analysis_model_timeout_seconds: 25
@@ -189,6 +201,7 @@ plugins:
 ## Security and trust
 
 - The plugin never injects copied OpenViking `SKILL.md` content as executable instructions. OpenViking returns ranking evidence; Hermes loads winners through native `skill_view`.
+- Execution-audit observers discard prompt, response, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, statuses, and outcomes.
 - Catalog documents are explicitly labeled untrusted data in auxiliary-model analysis prompts.
 - OpenViking mirror names include the Hermes profile and a stable digest. Mirrors removed from the effective Hermes catalog are deleted only when their names were previously recorded as router-owned.
 - The HTTP bridge rejects URL userinfo, paths, query strings, redirects, proxies, metadata/link-local targets, and oversized responses. Credentialed non-loopback endpoints require HTTPS.
@@ -201,7 +214,7 @@ Hermes currently has no documented public API that simultaneously provides exact
 
 All version-dependent Hermes imports and path lookup calls are isolated in `skill_router_plugin/compat/hermes.py` and detected by capability rather than version number. This plugin uses public `skills_list` as the visibility allowlist, then the compatibility layer uses the ordered and quarantined Hermes iterators to read approved files directly. It never invokes `skill_view` during inventory, so scans cannot run skill setup or alter usage telemetry. If a required internal API is unavailable or incompatible, routing safely falls back to catalog metadata only.
 
-`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, and auxiliary-task availability.
+`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, auxiliary-task, and skill-execution-audit availability. Audit requires both public `post_tool_call` and `post_llm_call` hooks; missing hooks disable observation without affecting routing.
 
 Additional limitations:
 

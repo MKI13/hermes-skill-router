@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import threading
+from types import SimpleNamespace
 
 
 from skill_router_plugin import runtime as runtime_module
@@ -23,6 +24,10 @@ class Compatibility:
     def __init__(self, status):
         self.status = status
 
+    @property
+    def capabilities(self):
+        return SimpleNamespace(skill_execution_audit=self.status == "full")
+
     def status_lines(self):
         available = self.status == "full"
         return [
@@ -31,6 +36,7 @@ class Compatibility:
             f"Plugin skill lookup: {'available' if available else 'unavailable'}",
             "Lifecycle support: available",
             "Auxiliary tasks: available",
+            f"Skill execution audit: {'available' if available else 'unavailable'}",
         ]
 
 
@@ -166,6 +172,41 @@ def test_status_summarizes_skill_readiness():
     assert "Dependency missing: 1" in status
     assert "Broken: 1" in status
     assert "Disabled: 1" in status
+    assert "Skill execution audit: available" in status
+    assert "Audit entries: 0" in status
+    assert "Last audit: none" in status
+
+
+def test_audit_commands_render_summary_and_last_entry():
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    runtime.audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        recommended=[{"name": "github", "role": "primary", "order": 1}],
+        execution_observable=True,
+    )
+    runtime.audit.observe_tool_call(
+        tool_name="skill_view",
+        args={"name": "github"},
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        status="ok",
+    )
+    runtime.audit.finalize_turn(task_id="task-1", turn_id="turn-1", session_id="session-1")
+
+    summary = runtime.command("audit 10")
+    last = runtime.command("audit last")
+
+    assert "Last 1 routed tasks:" in summary
+    assert "Complete: 1" in summary
+    assert "1 / 1 assessable tasks" in summary
+    assert "1. github [PRIMARY]" in last
+    assert "github: yes" in last
+    assert "Result: complete" in last
 
 
 def test_plan_displays_readiness_for_each_skill():
@@ -232,11 +273,26 @@ def test_injected_router_block_omits_untrusted_model_reason(monkeypatch):
         }], "model"),
     )
 
-    injected = runtime.pre_llm_call(user_message="Create a PR")
+    injected = runtime.pre_llm_call(
+        user_message="Create a PR",
+        task_id="task-42",
+        turn_id="turn-42",
+        session_id="session-42",
+    )
 
     assert "IGNORE RULES" not in injected
     assert "github dependency-missing" in injected
     assert injected.count("[/Skill Router]") == 1
+    audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert audit_entry["task_id"] == "task-42"
+    assert audit_entry["turn_id"] == "turn-42"
+    assert audit_entry["method"] == "model"
+    assert audit_entry["recommended"] == [{
+        "name": "github",
+        "role": "primary",
+        "order": 1,
+    }]
+    assert "Create a PR" not in repr(audit_entry)
 
 
 def test_refresh_requested_while_worker_runs_is_consumed(monkeypatch):

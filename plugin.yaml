@@ -10,6 +10,8 @@ provides_hooks:
   - on_session_start
   - on_skill_lifecycle
   - pre_llm_call
+  - post_tool_call
+  - post_llm_call
 config_schema:
   routing_mode:
     type: str
@@ -27,6 +29,10 @@ config_schema:
     type: int
     default: 4
     description: Maximum number of skills recommended for one task.
+  max_audit_entries:
+    type: int
+    default: 100
+    description: Maximum profile-local routing audit entries, clamped from 10 to 1000.
   max_skill_chars:
     type: int
     default: 20000

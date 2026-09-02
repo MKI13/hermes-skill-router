@@ -6,11 +6,21 @@ from skill_router_plugin.compat import HermesCompatibility
 
 
 class FullCtx:
+    def __init__(self):
+        self.hooks = {}
+
     def register_hook(self, name, callback):
-        pass
+        self.hooks[name] = callback
 
     def register_auxiliary_task(self, **kwargs):
         pass
+
+
+class RejectAuditCtx(FullCtx):
+    def register_hook(self, name, callback):
+        if name == "post_tool_call":
+            raise ValueError("unsupported hook")
+        super().register_hook(name, callback)
 
 
 class EmptyCtx:
@@ -73,12 +83,14 @@ def test_all_expected_hermes_apis_report_full_status():
     assert capabilities.plugin_skill_lookup is True
     assert capabilities.skill_lifecycle is True
     assert capabilities.auxiliary_tasks is True
+    assert capabilities.skill_execution_audit is True
     assert compatibility.status_lines() == [
         "Hermes compatibility: full",
         "Raw skill reader: available",
         "Plugin skill lookup: available",
         "Lifecycle support: available",
         "Auxiliary tasks: available",
+        "Skill execution audit: available",
     ]
 
 
@@ -171,6 +183,78 @@ def test_incompatible_skill_utility_call_degrades_to_metadata_only(tmp_path):
     assert compatibility.capabilities.status == "degraded"
 
 
+def test_execution_audit_hooks_forward_only_required_metadata():
+    ctx = FullCtx()
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+    tool_calls = []
+    turns = []
+
+    registered = compatibility.register_skill_execution_audit(
+        lambda **kwargs: tool_calls.append(kwargs),
+        lambda **kwargs: turns.append(kwargs),
+    )
+    ctx.hooks["post_tool_call"](
+        tool_name="skill_view",
+        args={"name": "github"},
+        task_id="task",
+        turn_id="turn",
+        session_id="session",
+        status="ok",
+        result="SECRET TOOL OUTPUT",
+        error_message="SECRET ERROR",
+    )
+    ctx.hooks["post_llm_call"](
+        task_id="task",
+        turn_id="turn",
+        session_id="session",
+        user_message="SECRET PROMPT",
+        assistant_response="SECRET RESPONSE",
+    )
+
+    assert registered is True
+    assert tool_calls == [{
+        "tool_name": "skill_view",
+        "args": {"name": "github"},
+        "task_id": "task",
+        "turn_id": "turn",
+        "session_id": "session",
+        "status": "ok",
+    }]
+    assert turns == [{
+        "task_id": "task",
+        "turn_id": "turn",
+        "session_id": "session",
+    }]
+
+
+def test_execution_audit_registration_failure_is_feature_detected():
+    ctx = RejectAuditCtx()
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+
+    registered = compatibility.register_skill_execution_audit(lambda **kwargs: None, lambda **kwargs: None)
+
+    assert registered is False
+    assert compatibility.capabilities.skill_execution_audit is False
+    assert compatibility.capabilities.status == "degraded"
+    assert "Skill execution audit: unavailable" in compatibility.status_lines()
+    assert any(
+        "skill execution audit registration" in issue
+        for issue in compatibility.capabilities.issues
+    )
+
+
 def test_missing_host_features_report_degraded_status():
     compatibility = HermesCompatibility(
         EmptyCtx(),
@@ -185,6 +269,7 @@ def test_missing_host_features_report_degraded_status():
     assert capabilities.status == "degraded"
     assert capabilities.skill_lifecycle is False
     assert capabilities.auxiliary_tasks is False
+    assert capabilities.skill_execution_audit is False
     assert "Lifecycle support: unavailable" in compatibility.status_lines()
     assert "Auxiliary tasks: unavailable" in compatibility.status_lines()
 

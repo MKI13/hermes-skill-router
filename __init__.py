@@ -27,7 +27,7 @@ def register(ctx) -> None:
     ctx.register_skill(
         "skill-router",
         skill_path,
-        "Inspect and operate the active profile's skill routing plan.",
+        "Inspect the active profile's routing plan, readiness, and execution audit.",
     )
     ctx.register_system_prompt_section(
         "skill-router.rules",
@@ -37,12 +37,16 @@ def register(ctx) -> None:
     )
     ctx.register_hook("on_session_start", runtime.on_session_start)
     compatibility.register_skill_lifecycle(runtime.on_skill_lifecycle)
+    compatibility.register_skill_execution_audit(
+        runtime.on_post_tool_call,
+        runtime.on_post_llm_call,
+    )
     ctx.register_hook("pre_llm_call", runtime.pre_llm_call)
     ctx.register_command(
         name="skill-router",
         handler=runtime.command,
-        description="Inspect, refresh, or test the profile skill routing plan.",
-        args_hint="[status|refresh|plan|inspect <skill>|recommend <task>]",
+        description="Inspect, audit, refresh, or test the profile skill routing plan.",
+        args_hint="[status|refresh|plan|inspect <skill>|audit [last|N]|recommend <task>]",
     )
 
     def setup_cli(parser) -> None:
@@ -53,6 +57,8 @@ def register(ctx) -> None:
         commands.add_parser("plan", help="Print the compact routing plan")
         inspect = commands.add_parser("inspect", help="Show cached readiness evidence for one skill")
         inspect.add_argument("skill_name")
+        audit = commands.add_parser("audit", help="Show recent routing execution audits")
+        audit.add_argument("selector", nargs="?", default="")
         recommend = commands.add_parser("recommend", help="Select skills for a sample task")
         recommend.add_argument("task", nargs="+")
 
@@ -67,6 +73,10 @@ def register(ctx) -> None:
         if action == "inspect":
             print(runtime.command("inspect " + args.skill_name))
             return 0
+        if action == "audit":
+            selector = getattr(args, "selector", "")
+            print(runtime.command("audit" + (" " + selector if selector else "")))
+            return 0
         if action == "recommend":
             print(runtime.command("recommend " + " ".join(args.task)))
             return 0
@@ -76,7 +86,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|refresh|plan|inspect|recommend}")
+        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|recommend}")
         return 2
 
     ctx.register_cli_command(
