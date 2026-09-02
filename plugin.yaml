@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -34,6 +34,14 @@ config_schema:
     type: int
     default: 100
     description: Maximum profile-local routing audit entries, clamped from 10 to 1000.
+  learning_mode:
+    type: str
+    default: shadow
+    description: "Learning mode: off or diagnostic-only shadow. Active routing feedback is unsupported."
+  learning_min_samples:
+    type: int
+    default: 5
+    description: Minimum primary-role observations before shadow bias, clamped from 3 to 100 and to the audit-history limit.
   enforcement_mode:
     type: str
     default: warn

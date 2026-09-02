@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 
 from skill_router_plugin import runtime as runtime_module
+from skill_router_plugin.learning import empty_learning_state
 from skill_router_plugin.runtime import SkillRouterRuntime, _fit_snapshot
 
 
@@ -192,6 +193,9 @@ def test_status_summarizes_skill_readiness():
     assert "Quality evaluation: enabled" in status
     assert "Quality records: 0" in status
     assert "Last quality: none" in status
+    assert "Learning: shadow" in status
+    assert "Learning records: 0 skills" in status
+    assert "Shadow primary changes: 0" in status
     assert "Routing policy: enabled" in status
     assert "Skill execution guard: available" in status
     assert "Enforcement mode: warn" in status
@@ -250,6 +254,83 @@ def test_audit_commands_render_summary_and_last_entry():
     assert "Confidence: high" in quality_last
     assert "Quality records: 1" in status
     assert "Last quality: excellent (1.00)" in status
+
+
+def test_learning_commands_render_rebuild_detail_last_and_reset(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"learning_mode": "shadow", "learning_min_samples": 5}))
+    state = empty_learning_state(5)
+    state["usable_quality_records"] = 8
+    state["skills"]["github"] = {
+        "samples": 8,
+        "weighted_samples": 7.5,
+        "primary_samples": 8,
+        "supporting_samples": 0,
+        "dependency_samples": 0,
+        "average_quality": 0.91,
+        "load_success_rate": 0.96,
+        "primary_success_rate": 0.96,
+        "load_error_rate": 0.02,
+        "confidence": "medium",
+        "shadow_bias": 0.03,
+        "status": "sufficient_data",
+        "roles": {
+            "primary": {
+                "samples": 8,
+                "weighted_samples": 7.5,
+                "technical_score": 0.91,
+                "load_success_rate": 0.96,
+            }
+        },
+    }
+    state["shadow_comparisons"] = [{
+        "actual_primary": "a",
+        "shadow_primary": "github",
+        "shadow_changed": True,
+    }]
+    runtime.ctx.state.set("router.learning", state)
+    monkeypatch.setattr(runtime, "_rebuild_learning", lambda: deepcopy(state))
+
+    summary = runtime.command("learning")
+    detail = runtime.command("learning github")
+    last = runtime.command("learning last")
+    rebuilt = runtime.command("learning rebuild")
+
+    assert "Mode: shadow" in summary
+    assert "Usable quality records: 8" in summary
+    assert "Shadow bias: +0.02" in detail
+    assert "Actual primary: a" in last
+    assert "Shadow primary: github" in last
+    assert "Learning state rebuilt" in rebuilt
+    assert "No routing behavior was changed." in summary
+
+    runtime.ctx.state.set("router.audit", {"version": 1, "entries": [{"quality": "retained"}]})
+    reset = runtime.command("learning reset")
+    assert "Audit and quality history were retained" in reset
+    assert runtime.ctx.state.get("router.learning")["skills"] == {}
+    assert runtime.ctx.state.get("router.audit")["entries"][0]["quality"] == "retained"
+    assert "No shadow comparison recorded" in runtime.command("learning last")
+
+
+def test_learning_min_samples_cannot_exceed_audit_history_limit():
+    runtime = SkillRouterRuntime(Ctx({"learning_min_samples": 100, "max_audit_entries": 10}))
+
+    assert runtime._learning_min_samples() == 10
+
+
+def test_learning_commands_report_state_write_failure():
+    runtime = SkillRouterRuntime(Ctx())
+
+    class FailingState:
+        def get(self, key, default=None):
+            return default
+
+        def set(self, key, value):
+            raise OSError("state unavailable")
+
+    runtime.ctx.state = FailingState()
+
+    assert "reset failed" in runtime.command("learning reset")
+    assert "rebuild failed" in runtime.command("learning rebuild")
 
 
 def test_plan_displays_readiness_for_each_skill():
@@ -553,6 +634,156 @@ def test_audit_receives_final_policy_selection(monkeypatch):
         },
         {"name": "pr-review", "role": "primary", "order": 2},
     ]
+
+
+def test_shadow_learning_does_not_change_selection_or_policy_input(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"learning_mode": "shadow"}), Compatibility("full"))
+    entries = [
+        {"name": "a", "readiness_status": "ready", "requirements": {"skills": []}},
+        {"name": "b", "readiness_status": "ready", "requirements": {"skills": []}},
+    ]
+    runtime.ctx.state.set("router.snapshot", {"catalog_hash": "abc", "entries": entries})
+    state = empty_learning_state(5)
+    state["skills"]["b"] = {
+        "samples": 50,
+        "primary_samples": 50,
+        "supporting_samples": 0,
+        "dependency_samples": 0,
+        "shadow_bias": 0.10,
+        "roles": {
+            "primary": {
+                "samples": 50,
+                "weighted_samples": 40.0,
+                "technical_score": 1.0,
+                "load_success_rate": 1.0,
+            }
+        },
+    }
+    actual = [
+        {
+            "name": "a",
+            "role": "primary",
+            "reason": "actual primary",
+            "order": 1,
+            "readiness_status": "ready",
+        },
+        {
+            "name": "b",
+            "role": "supporting",
+            "reason": "actual supporting",
+            "order": 2,
+            "readiness_status": "ready",
+        },
+    ]
+    captured = {}
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime, "_rebuild_learning", lambda: deepcopy(state))
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, values: {})
+    monkeypatch.setattr(runtime_module, "select_skills", lambda *args, **kwargs: (deepcopy(actual), "model"))
+
+    def policy(task, selected, catalog, maximum):
+        captured["selected"] = deepcopy(selected)
+        return {"selections": deepcopy(selected), "policy_status": "valid", "warnings": [], "changes": []}
+
+    monkeypatch.setattr(runtime, "_policy_result", policy)
+
+    injected = runtime.pre_llm_call(
+        user_message="perform task",
+        task_id="task-shadow",
+        turn_id="turn-shadow",
+        session_id="session-shadow",
+    )
+
+    assert captured["selected"] == actual
+    assert "1. PRIMARY: a" in injected
+    assert "2. SUPPORTING: b" in injected
+    entry = runtime.ctx.state.get("router.audit")["entries"][-1]
+    assert entry["actual_primary"] == "a"
+    assert entry["shadow_primary"] == "b"
+    assert entry["shadow_changed"] is True
+    assert entry["recommended"][0]["name"] == "a"
+    assert entry["recommended"][0]["role"] == "primary"
+
+
+def test_shadow_and_off_modes_produce_bit_identical_real_guidance(monkeypatch):
+    entries = [
+        {"name": "a", "readiness_status": "ready", "requirements": {"skills": []}},
+        {"name": "b", "readiness_status": "ready", "requirements": {"skills": []}},
+    ]
+    actual = [
+        {"name": "a", "role": "primary", "reason": "actual", "order": 1, "readiness_status": "ready"},
+        {"name": "b", "role": "supporting", "reason": "support", "order": 2, "readiness_status": "ready"},
+    ]
+    state = empty_learning_state(5)
+    state["skills"]["b"] = {
+        "samples": 50,
+        "primary_samples": 50,
+        "shadow_bias": 0.10,
+        "roles": {
+            "primary": {
+                "samples": 50,
+                "weighted_samples": 40.0,
+                "technical_score": 1.0,
+                "load_success_rate": 1.0,
+            }
+        },
+    }
+    monkeypatch.setattr(runtime_module, "select_skills", lambda *args, **kwargs: (deepcopy(actual), "model"))
+    outputs = []
+    for mode in ("off", "shadow"):
+        runtime = SkillRouterRuntime(Ctx({"learning_mode": mode}), Compatibility("full"))
+        runtime.ctx.state.set("router.snapshot", {"catalog_hash": "abc", "entries": entries})
+        monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+        monkeypatch.setattr(runtime, "_rebuild_learning", lambda: deepcopy(state))
+        monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, values: {})
+        monkeypatch.setattr(
+            runtime,
+            "_policy_result",
+            lambda *args: {"selections": deepcopy(actual), "policy_status": "valid", "warnings": [], "changes": []},
+        )
+        outputs.append(runtime.pre_llm_call(
+            user_message="perform task",
+            task_id=f"task-{mode}",
+            turn_id=f"turn-{mode}",
+            session_id=f"session-{mode}",
+        ))
+
+    assert outputs[0] == outputs[1]
+
+
+def test_learning_failure_never_discards_actual_routing(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"learning_mode": "shadow"}), Compatibility("full"))
+    entries = [{"name": "a", "readiness_status": "ready", "requirements": {"skills": []}}]
+    runtime.ctx.state.set("router.snapshot", {"catalog_hash": "abc", "entries": entries})
+    actual = [{
+        "name": "a",
+        "role": "primary",
+        "reason": "actual",
+        "order": 1,
+        "readiness_status": "ready",
+    }]
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, values: {})
+    monkeypatch.setattr(runtime.learning, "rebuild", lambda *args: (_ for _ in ()).throw(RuntimeError("learning failed")))
+    monkeypatch.setattr(runtime_module, "select_skills", lambda *args, **kwargs: (deepcopy(actual), "model"))
+    monkeypatch.setattr(
+        runtime,
+        "_policy_result",
+        lambda *args: {"selections": deepcopy(actual), "policy_status": "valid", "warnings": [], "changes": []},
+    )
+
+    injected = runtime.pre_llm_call(
+        user_message="perform task",
+        task_id="task-learning-failure",
+        turn_id="turn-learning-failure",
+        session_id="session-learning-failure",
+    )
+
+    assert "1. PRIMARY: a" in injected
+    entry = runtime.ctx.state.get("router.audit")["entries"][-1]
+    assert entry["actual_primary"] == "a"
+    assert entry["shadow_primary"] == "a"
+    assert entry["recommended"][0]["name"] == "a"
 
 
 def test_primary_guard_uses_final_policy_order_and_updates_audit(monkeypatch):

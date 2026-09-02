@@ -14,6 +14,14 @@ from .audit import SkillExecutionAudit
 from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .enforcement import SkillExecutionGuard
+from .learning import (
+    ShadowLearning,
+    compare_shadow_ranking,
+    empty_learning_state,
+    learning_last,
+    learning_skill,
+    learning_summary,
+)
 from .openviking import OpenVikingBridge
 from .planner import analyze_changed_skills, select_skills
 from .policy import apply_routing_policy, detect_explicit_skill_names
@@ -53,6 +61,7 @@ class SkillRouterRuntime:
         self.compatibility = compatibility or HermesCompatibility(ctx)
         self.openviking = OpenVikingBridge(ctx)
         self.audit = SkillExecutionAudit(ctx)
+        self.learning = ShadowLearning(ctx)
         self.guard = SkillExecutionGuard()
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -60,6 +69,7 @@ class SkillRouterRuntime:
         self._pending_reason = ""
         self._last_scan_monotonic = 0.0
         self._invalid_enforcement_mode_reported = False
+        self._invalid_learning_mode_reported = False
 
     def stop(self) -> None:
         """Stop and join the owned refresh worker before plugin unload completes."""
@@ -141,6 +151,7 @@ class SkillRouterRuntime:
             enforcement=guard_state,
         )
         self.audit.finalize_turn(**kwargs)
+        self._rebuild_learning()
 
     def pre_llm_call(
         self,
@@ -161,6 +172,7 @@ class SkillRouterRuntime:
                 self.request_deep_refresh("catalog-fingerprint-change")
             snapshot = self._snapshot()
             stored_entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+            learning_state = self._rebuild_learning()
             scores = self.openviking.find_scores(task, stored_entries)
             entries = [
                 {**entry, "openviking_score": scores.get(str(entry.get("name")), 0.0)}
@@ -178,6 +190,7 @@ class SkillRouterRuntime:
             )
             policy = self._policy_result(task, selected, entries, max_skills)
             selected = policy["selections"]
+            shadow = self._shadow_result(task, selected, entries, learning_state)
         except Exception as exc:
             logger.warning("Skill Router task routing failed: %s", exc, exc_info=True)
             return (
@@ -207,7 +220,12 @@ class SkillRouterRuntime:
                 "primary_loaded_before_task_tools"
             ),
             execution_observable=self.compatibility.capabilities.skill_execution_audit,
+            learning_mode=str(shadow.get("learning_mode") or "off"),
+            actual_primary=str(shadow.get("actual_primary") or ""),
+            shadow_primary=str(shadow.get("shadow_primary") or ""),
+            shadow_changed=bool(shadow.get("shadow_changed")),
         )
+        self._rebuild_learning()
 
         policy_status = str(policy.get("policy_status") or "degraded")
         if not selected:
@@ -386,6 +404,31 @@ class SkillRouterRuntime:
             return self.status_text()
         if action == "enforcement":
             return self.enforcement_text()
+        if action == "learning":
+            detail = " ".join(args[1:]).strip()
+            minimum = self._learning_min_samples()
+            if detail.casefold() == "reset":
+                self.learning.reset(minimum)
+                if not self.learning.write_succeeded():
+                    return "Skill Router Learning\n\nLearning state reset failed; existing state may remain."
+                return (
+                    "Skill Router Learning\n\nLearning state reset. Audit and quality history "
+                    "were retained. The next rebuild can derive learning again."
+                )
+            if detail.casefold() == "rebuild":
+                state = self._rebuild_learning()
+                if not self.learning.write_succeeded():
+                    return "Learning state rebuild failed; existing state may remain."
+                return (
+                    "Learning state rebuilt from bounded quality history.\n\n"
+                    + learning_summary(state, self._learning_mode())
+                )
+            state = self.learning.state(minimum)
+            if detail.casefold() == "last":
+                return learning_last(state)
+            if detail:
+                return learning_skill(state, detail)
+            return learning_summary(state, self._learning_mode())
         if action == "quality":
             detail = args[1].casefold() if len(args) > 1 else ""
             if detail == "last":
@@ -446,6 +489,12 @@ class SkillRouterRuntime:
             )
             policy = self._policy_result(task, selected, entries, max_skills)
             validated = policy["selections"]
+            shadow = self._shadow_result(
+                task,
+                validated,
+                entries,
+                self._rebuild_learning(),
+            )
             lines = [f"Method: {method}", f"Policy: {policy['policy_status']}", ""]
             if validated:
                 lines.extend(
@@ -463,10 +512,17 @@ class SkillRouterRuntime:
             if warnings:
                 lines.extend(["", "Policy warnings:"])
                 lines.extend(f"- {str(warning)[:200]}" for warning in warnings[:10])
+            if shadow.get("learning_mode") == "shadow" and shadow.get("actual_primary"):
+                lines.extend([
+                    "",
+                    f"Shadow primary: {shadow.get('shadow_primary') or shadow['actual_primary']}",
+                    f"Shadow changed primary: {'yes' if shadow.get('shadow_changed') else 'no'}",
+                    "No routing behavior was changed.",
+                ])
             return "\n".join(lines)
         return (
             "Usage: /skill-router "
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|enforcement|recommend <task>]"
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
         )
 
     def status_text(self) -> str:
@@ -486,6 +542,18 @@ class SkillRouterRuntime:
             available=self.compatibility.capabilities.skill_execution_audit
         )
         quality_records, last_quality = self.audit.quality_status_fields()
+        learning_state = self.learning.state(self._learning_min_samples())
+        learning_skills = learning_state.get("skills")
+        if not isinstance(learning_skills, dict):
+            learning_skills = {}
+        shadow_comparisons = learning_state.get("shadow_comparisons")
+        if not isinstance(shadow_comparisons, list):
+            shadow_comparisons = []
+        shadow_changes = sum(
+            1
+            for item in shadow_comparisons
+            if isinstance(item, dict) and item.get("shadow_changed") is True
+        )
         readiness_lines = [
             "Skill readiness:",
             *[
@@ -502,6 +570,9 @@ class SkillRouterRuntime:
             "Quality evaluation: enabled",
             f"Quality records: {quality_records}",
             f"Last quality: {last_quality}",
+            f"Learning: {self._learning_mode()}",
+            f"Learning records: {len(learning_skills)} skills",
+            f"Shadow primary changes: {shadow_changes}",
             f"Indexed skills: {len(entries)}",
             *readiness_lines,
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",
@@ -718,6 +789,65 @@ class SkillRouterRuntime:
                 "policy_status": "degraded",
                 "changes": ["Policy validation failed; no skill recommendation was retained."],
             }
+
+    def _shadow_result(
+        self,
+        task: str,
+        selections: list[dict[str, Any]],
+        entries: list[dict[str, Any]],
+        learning_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        actual = next(
+            (
+                str(item.get("name") or "")
+                for item in selections
+                if isinstance(item, dict) and item.get("role") == "primary"
+            ),
+            "",
+        )
+        try:
+            return compare_shadow_ranking(
+                selections,
+                learning_state,
+                explicit_skill_names=detect_explicit_skill_names(task, entries),
+                mode=self._learning_mode(),
+            )
+        except Exception:
+            logger.warning("Skill Router shadow comparison failed", exc_info=True)
+            return {
+                "learning_mode": self._learning_mode(),
+                "actual_primary": actual,
+                "shadow_primary": actual,
+                "shadow_changed": False,
+            }
+
+    def _rebuild_learning(self) -> dict[str, Any]:
+        try:
+            return self.learning.rebuild(
+                self.audit.history,
+                self._learning_min_samples(),
+            )
+        except Exception:
+            logger.warning("Skill Router learning rebuild failed", exc_info=True)
+            return empty_learning_state(self._learning_min_samples())
+
+    def _learning_mode(self) -> str:
+        mode = str(self.ctx.get_config("learning_mode", "shadow") or "shadow").casefold()
+        if mode in {"off", "shadow"}:
+            return mode
+        if not self._invalid_learning_mode_reported:
+            logger.warning("Invalid learning_mode %r; using shadow", mode[:100])
+            self._invalid_learning_mode_reported = True
+        return "shadow"
+
+    def _learning_min_samples(self) -> int:
+        history_limit = self._int_setting("max_audit_entries", 100, minimum=10, maximum=1000)
+        return self._int_setting(
+            "learning_min_samples",
+            5,
+            minimum=3,
+            maximum=min(100, history_limit),
+        )
 
     def _enforcement_mode(self) -> str:
         mode = str(self.ctx.get_config("enforcement_mode", "warn") or "warn").casefold()

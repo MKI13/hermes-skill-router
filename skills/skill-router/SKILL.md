@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Routes every task to the best installed skills.
-version: 0.1.0
+version: 0.2.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -21,6 +21,7 @@ Use this skill when the user asks to:
 - refresh the routing plan after manual filesystem changes;
 - test which skills would be selected for a sample task;
 - diagnose missing, stale, or unsuitable recommendations;
+- inspect or rebuild profile-local shadow-learning evidence;
 - configure the local auxiliary model used for routing.
 
 Do not load this operational skill merely because another skill was recommended. Follow the injected `[Skill Router]` block instead.
@@ -43,6 +44,9 @@ Use the plugin command inside a Hermes conversation:
 /skill-router inspect github
 /skill-router audit
 /skill-router audit last
+/skill-router quality last
+/skill-router learning
+/skill-router learning last
 /skill-router recommend prepare a release and publish it on GitHub
 ```
 
@@ -58,6 +62,7 @@ The router itself runs automatically before ordinary user requests. A manual com
 | `/skill-router inspect <skill>` | Show cached dependency and setup evidence without secret values. |
 | `/skill-router audit [last\|N]` | Summarize recent routed turns or inspect the latest execution result. |
 | `/skill-router quality [last\|N]` | Show deterministic technical routing-quality signals. |
+| `/skill-router learning [last\|reset\|rebuild\|<skill>]` | Inspect or rebuild diagnostic shadow-learning aggregates without changing routing. |
 | `/skill-router enforcement` | Show execution-guard capability and current-turn state. |
 | `/skill-router recommend <task>` | Test routing without performing the task. |
 
@@ -67,6 +72,8 @@ Routing modes are configured under `plugins.entries.skill-router.settings.routin
 - `deterministic`: use OpenViking scores plus local term matching without a model call.
 
 Both modes pass through the deterministic routing policy. The policy validates readiness, normalizes one primary role, expands declared skill dependencies before their dependent, resolves alternatives, enforces the skill limit, and discards unsafe or invalid selections. It does not semantically rerank the task.
+
+`learning_mode: shadow` derives bounded technical evidence from high- or medium-confidence quality history. The comparison never changes the real recommendation, policy, enforcement, OpenViking evidence, or skill metadata. Bias requires enough primary-role samples and remains within `-0.20` to `+0.20`; `active` mode is unsupported.
 
 ## Procedure
 
@@ -84,7 +91,7 @@ Both modes pass through the deterministic routing policy. The policy validates r
 
 - Do not invent a skill name. Only `skills_list` and the router plan define available skills.
 - Do not assume one profile's plan or audit history applies to another profile. Hermes profiles are intentionally isolated.
-- Audit and quality outcomes are diagnostic only; they do not enforce `skill_view`, repeat turns, or change ranking. Quality measures technical routing execution, not the correctness of Hermes' final domain answer.
+- Audit, quality, and shadow-learning outcomes are diagnostic only; they do not enforce `skill_view`, repeat turns, or change real ranking. They measure technical routing execution, not the correctness of Hermes' final domain answer or a skill's domain competence.
 - Never substitute raw auxiliary-model selections for a blocked or failed policy result. The policy is the authoritative recommendation plan.
 - `skill_view` remains allowed by every enforcement mode. If hard enforcement exhausts its bounded block budget or loses reliable turn identity, continue fail-open and diagnose the audit instead of retrying the turn.
 - Do not treat OpenViking's memory-provider LLM as Hermes' routing model automatically. The router uses its registered Hermes auxiliary task; point that task at the desired local model.

@@ -526,6 +526,34 @@ def test_quality_failure_does_not_prevent_audit_finalization(monkeypatch):
     assert entry["quality"]["grade"] == "unknown"
 
 
+def test_audit_persists_only_compact_shadow_comparison():
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    audit.record_decision(
+        task="secret prompt",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        recommended=[recommendation("github")],
+        policy_status="valid",
+        execution_observable=True,
+        learning_mode="shadow",
+        actual_primary="github",
+        shadow_primary="code-review",
+        shadow_changed=True,
+    )
+
+    entry = audit.history()[-1]
+
+    assert entry["learning_mode"] == "shadow"
+    assert entry["actual_primary"] == "github"
+    assert entry["shadow_primary"] == "code-review"
+    assert entry["shadow_changed"] is True
+    assert "secret prompt" not in repr(entry)
+    assert "shadow_candidates" not in entry
+
+
 def test_old_audit_entry_without_quality_remains_readable():
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)

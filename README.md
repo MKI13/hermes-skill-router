@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.1.0`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.2.0`). Test it with your Hermes and OpenViking versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -27,8 +27,9 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
 11. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls and compact guard outcomes with the validated routing decision. The audit itself never blocks, retries, or changes ranking.
-12. **Quality evaluation:** each finalized audit receives a versioned deterministic score for technical routing and execution quality. Scores never feed back into selection, policy, OpenViking, or skill metadata.
-13. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+12. **Quality evaluation:** each finalized audit receives a versioned deterministic score for technical routing and execution quality.
+13. **Shadow learning:** current-version, high-confidence quality history is rebuilt into profile-local skill-role aggregates and conservative diagnostic biases. A separate shadow comparison is recorded, while the real selection remains unchanged.
+14. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
 Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
 
@@ -137,6 +138,11 @@ Inside a session:
 /skill-router audit last
 /skill-router quality
 /skill-router quality last
+/skill-router learning
+/skill-router learning github
+/skill-router learning last
+/skill-router learning rebuild
+/skill-router learning reset
 /skill-router enforcement
 /skill-router recommend research current inference providers
 ```
@@ -152,6 +158,11 @@ hermes skill-router audit
 hermes skill-router audit last
 hermes skill-router quality
 hermes skill-router quality last
+hermes skill-router learning
+hermes skill-router learning github
+hermes skill-router learning last
+hermes skill-router learning rebuild
+hermes skill-router learning reset
 hermes skill-router enforcement
 hermes skill-router recommend research current inference providers
 ```
@@ -198,6 +209,16 @@ Scoring starts at 1.0 and applies centralized penalties. Adjusted or degraded po
 
 Grades are `excellent` at 0.90, `good` at 0.75, `acceptable` at 0.55, `poor` at 0.30, and `failed` below 0.30. Confidence is high when finalized observer data, complete Hermes identities, load results, task-tool timing, and dependency ordering are available; missing technical evidence lowers it to medium or low. Model and deterministic routing use identical rules. `/skill-router quality`, `/skill-router quality N`, and `/skill-router quality last` expose aggregate and latest technical results. Quality remains passive: it never changes ranking, policy, readiness, enforcement, OpenViking scores, or skill metadata.
 
+## Shadow learning
+
+`skill_router_plugin/learning.py` deterministically rebuilds `learning_version: 1` aggregates from the bounded profile audit at `router.learning`. Only assessable current-version quality records captured in `shadow` mode with high or medium confidence are usable. High confidence has weight 1.0; medium has weight 0.35; low, unknown, incompatible, and unassessable records are ignored. A gentle `0.985` recency decay favors newer bounded observations without deleting older evidence.
+
+Evidence is assigned only to the recommended skill it describes: successful or missing load, that skill's load error, timely primary loading, and the declared dependency edge order. Turn-level quality and completion are not copied into a skill score. Primary, supporting, and dependency observations remain separate. Shadow primary bias uses primary-role evidence only, requires at least `learning_min_samples` raw samples plus 50% effective weighted evidence, and applies conservative shrinkage around a neutral technical score. The result is clamped to `-0.20` through `+0.20`.
+
+The real planner and policy receive exactly the existing unmodified selection. Shadow comparison considers only non-dependency selections with the actual primary's readiness class; broken, disabled, dependency-missing, and differently ready candidates cannot be promoted. Any explicit skill request suppresses shadow reordering. The comparison stores only actual primary, shadow primary, mode, and changed flag in the bounded audit; it is never injected, enforced, audited as an actual recommendation, sent to OpenViking, or used as routing feedback.
+
+`/skill-router learning` reads the current aggregate, `/skill-router learning <skill>` shows role counts and technical rates, and `/skill-router learning last` shows the latest actual-versus-shadow comparison. `learning rebuild` regenerates state from retained audit/quality history. `learning reset` clears only `router.learning`; it preserves audit, quality, plan, and OpenViking data, so a later explicit or routing-triggered rebuild can restore the derived aggregates. `learning_mode: off` records no usable learning observations and performs no shadow reordering. No `active` mode exists.
+
 ## Configuration
 
 Settings live under the active profile:
@@ -213,6 +234,8 @@ plugins:
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         max_audit_entries: 100          # clamped to 10-1000
+        learning_mode: shadow           # off | shadow; no active mode
+        learning_min_samples: 5         # clamped to 3-100 and audit limit
         enforcement_mode: warn          # off | warn | primary | all
         max_enforcement_blocks_per_turn: 2  # clamped to 1-5
         max_skill_chars: 20000
@@ -234,7 +257,8 @@ plugins:
 - The plugin never injects copied OpenViking `SKILL.md` content as executable instructions. OpenViking returns ranking evidence; Hermes loads winners through native `skill_view`.
 - Execution observers discard prompt, response, task-tool arguments, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, routing/policy/enforcement statuses, bounded block counts, and outcomes.
 - A policy failure discards the unvalidated selection and returns a degraded empty plan; it never falls back to raw model output.
-- Quality evaluation reads only sanitized bounded audit metadata and makes no model call. It stores no per-skill success rate and has no path back into routing or ranking.
+- Quality evaluation reads only sanitized bounded audit metadata and makes no model call. It has no path back into routing or ranking.
+- Shadow learning stores only bounded technical aggregates by skill and role. It copies no task hash, prompt, response, tool argument/result, error text, file, credential, or skill content, and it cannot modify routing metadata or OpenViking.
 - Catalog documents are explicitly labeled untrusted data in auxiliary-model analysis prompts.
 - OpenViking mirror names include the Hermes profile and a stable digest. Mirrors removed from the effective Hermes catalog are deleted only when their names were previously recorded as router-owned.
 - The HTTP bridge rejects URL userinfo, paths, query strings, redirects, proxies, metadata/link-local targets, and oversized responses. Credentialed non-loopback endpoints require HTTPS.

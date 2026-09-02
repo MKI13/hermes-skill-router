@@ -4,7 +4,7 @@ Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https
 
 Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, liest deren `SKILL.md`, erzeugt mit einem konfigurierbaren Hermes-Hilfsmodell einen Einsatzplan, spiegelt Katalog und Plan nach OpenViking und empfiehlt vor jeder Benutzeraufgabe die passenden Skills in der richtigen Reihenfolge. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.1.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
+> Status: frühe Community-Version (`0.2.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 
@@ -27,8 +27,9 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 9. Der finale Policy-Plan initialisiert einen turn-isolierten Execution Guard. Der Standardmodus warnt nur; optionale harte Modi verlangen über `pre_tool_call` erfolgreiche geordnete `skill_view`-Aufrufe vor Task-Tools.
 10. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
 11. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe und kompakte Guard-Ergebnisse der validierten Routing-Entscheidung zu. Der Audit selbst blockiert nichts, wiederholt nichts und verändert kein Ranking.
-12. Jeder finalisierte Audit erhält eine versionierte deterministische Bewertung der technischen Routing- und Ausführungsqualität. Scores fließen nie in Auswahl, Policy, OpenViking oder Skill-Metadaten zurück.
-13. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+12. Jeder finalisierte Audit erhält eine versionierte deterministische Bewertung der technischen Routing- und Ausführungsqualität.
+13. Aktuelle hochwertige Quality-Historie wird in profilspezifische Skill-/Rollen-Aggregate und konservative diagnostische Bias-Werte umgebaut. Ein separater Shadow-Vergleich wird gespeichert, während die reale Auswahl unverändert bleibt.
+14. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
 Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
 
@@ -104,6 +105,11 @@ In einer Session:
 /skill-router audit last
 /skill-router quality
 /skill-router quality last
+/skill-router learning
+/skill-router learning github
+/skill-router learning last
+/skill-router learning rebuild
+/skill-router learning reset
 /skill-router enforcement
 /skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
@@ -119,6 +125,11 @@ hermes skill-router audit
 hermes skill-router audit last
 hermes skill-router quality
 hermes skill-router quality last
+hermes skill-router learning
+hermes skill-router learning github
+hermes skill-router learning last
+hermes skill-router learning rebuild
+hermes skill-router learning reset
 hermes skill-router enforcement
 hermes skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
@@ -165,6 +176,16 @@ Das Scoring startet bei 1,0 und zieht zentral definierte Penalties ab. Angepasst
 
 Grades sind `excellent` ab 0,90, `good` ab 0,75, `acceptable` ab 0,55, `poor` ab 0,30 und `failed` darunter. Confidence ist hoch, wenn finalisierte Observer-Daten, vollständige Hermes-IDs, Ladeergebnisse, Task-Tool-Zeitpunkt und Dependency-Reihenfolge vorliegen; fehlende technische Evidenz reduziert sie auf mittel oder niedrig. Modell- und deterministisches Routing verwenden dieselben Regeln. `/skill-router quality`, `/skill-router quality N` und `/skill-router quality last` zeigen aggregierte beziehungsweise letzte technische Ergebnisse. Quality bleibt passiv und verändert weder Ranking, Policy, Readiness, Enforcement, OpenViking-Scores noch Skill-Metadaten.
 
+## Shadow Learning
+
+`skill_router_plugin/learning.py` baut deterministisch Aggregate mit `learning_version: 1` aus dem begrenzten Profil-Audit unter `router.learning` neu auf. Nutzbar sind nur bewertbare aktuelle Quality-Datensätze, die im Modus `shadow` mit hoher oder mittlerer Confidence erfasst wurden. Hohe Confidence erhält Gewicht 1,0, mittlere 0,35; niedrige, unbekannte, inkompatible und nicht bewertbare Datensätze werden ignoriert. Eine sanfte zeitliche Gewichtung von `0.985` bevorzugt neuere begrenzte Beobachtungen, ohne ältere Evidenz zu löschen.
+
+Evidenz wird nur dem Skill zugeordnet, den sie beschreibt: erfolgreicher oder fehlender Load, Load Error dieses Skills, rechtzeitiger Primary-Load und Reihenfolge der deklarierten Dependency-Kante. Turn-weite Quality und Completion werden nicht in einen Skill-Score kopiert. Primary-, Supporting- und Dependency-Beobachtungen bleiben getrennt. Der Shadow-Primary-Bias nutzt nur Primary-Rollen-Evidenz, verlangt mindestens `learning_min_samples` rohe Samples sowie 50 Prozent effektive gewichtete Evidenz und verwendet konservative Shrinkage um einen neutralen technischen Score. Das Ergebnis ist auf `-0.20` bis `+0.20` begrenzt.
+
+Realer Planner und Policy erhalten exakt die bestehende unveränderte Auswahl. Der Shadow-Vergleich berücksichtigt nur Nicht-Dependency-Auswahlen derselben Readiness-Klasse wie der reale Primary; Broken, Disabled, Dependency-Missing und abweichend bereite Kandidaten können nicht hochgestuft werden. Jeder explizite Skill-Wunsch unterdrückt Shadow-Umsortierung. Im Audit bleiben nur realer Primary, Shadow-Primary, Modus und Changed-Flag. Diese Daten werden weder injiziert oder enforced noch als reale Empfehlung auditiert, an OpenViking gesendet oder als Routing-Feedback verwendet.
+
+`/skill-router learning` liest das aktuelle Aggregat, `/skill-router learning <skill>` zeigt Rollen-Samples und technische Raten, und `/skill-router learning last` zeigt den letzten Actual-vs-Shadow-Vergleich. `learning rebuild` erzeugt den State vollständig aus erhaltener Audit-/Quality-Historie. `learning reset` löscht nur `router.learning`; Audit, Quality, Plan und OpenViking-Daten bleiben erhalten, sodass ein späterer expliziter oder Routing-ausgelöster Rebuild die abgeleiteten Aggregate wiederherstellt. `learning_mode: off` erfasst keine nutzbaren Learning-Beobachtungen und führt keine Shadow-Umsortierung aus. Einen Modus `active` gibt es nicht.
+
 ## Einstellungen
 
 ```yaml
@@ -178,6 +199,8 @@ plugins:
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         max_audit_entries: 100          # begrenzt auf 10-1000
+        learning_mode: shadow           # off | shadow; kein active-Modus
+        learning_min_samples: 5         # begrenzt auf 3-100 und Audit-Limit
         enforcement_mode: warn          # off | warn | primary | all
         max_enforcement_blocks_per_turn: 2  # begrenzt auf 1-5
         max_skill_chars: 20000
@@ -199,7 +222,8 @@ plugins:
 - OpenViking liefert nur Retrieval-Hinweise und Skill-Namen. Die dort gespeicherte Kopie wird nicht direkt als ausführbare Anweisung eingefügt.
 - Die Ausführungs-Observer verwerfen Prompt-, Antwort-, Task-Tool-Argument-, Tool-Ergebnis- und Fehlerdaten bereits an der Compatibility-Grenze. Persistiert werden nur Identifikatoren, Task-Hashes, Skill-Namen, Rollen, Reihenfolge, Zeitpunkte, Routing-/Policy-/Enforcement-Statuswerte, begrenzte Block-Zähler und Ergebnisse.
 - Bei einem Policy-Fehler wird die ungeprüfte Auswahl verworfen und ein leerer degradierter Plan geliefert; rohe Modellausgaben werden nie als Fallback injiziert.
-- Die Quality-Auswertung liest nur bereinigte begrenzte Audit-Metadaten und ruft kein Modell auf. Sie speichert keine Skill-Erfolgsraten und besitzt keinen Rückkanal zu Routing oder Ranking.
+- Die Quality-Auswertung liest nur bereinigte begrenzte Audit-Metadaten und ruft kein Modell auf. Sie besitzt keinen Rückkanal zu Routing oder Ranking.
+- Shadow Learning speichert nur begrenzte technische Aggregate je Skill und Rolle. Es kopiert weder Task-Hash, Prompt, Antwort, Tool-Argument/-Ergebnis, Fehlertext, Datei, Zugangsdaten noch Skill-Inhalt und kann Routing-Metadaten oder OpenViking nicht verändern.
 - Entfernte Spiegel werden nur gelöscht, wenn ihr Name zuvor als Router-Eigentum im Profilzustand gespeichert wurde.
 - Die HTTP-Brücke blockiert URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, Metadaten-/Link-Local-Ziele und übergroße Antworten. Zugangsdaten außerhalb von Loopback erfordern HTTPS.
 - Das Hilfsmodell erhält Skill-Dokumente ausdrücklich als nicht vertrauenswürdige Analysedaten.

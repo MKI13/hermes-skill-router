@@ -42,6 +42,10 @@ class SkillExecutionAudit:
         block_count: int = 0,
         primary_loaded_before_task_tools: bool | None = None,
         execution_observable: bool,
+        learning_mode: str = "off",
+        actual_primary: str = "",
+        shadow_primary: str = "",
+        shadow_changed: bool = False,
     ) -> None:
         """Append one bounded decision without retaining the full user prompt."""
         try:
@@ -70,6 +74,10 @@ class SkillExecutionAudit:
                 "execution_observable": bool(execution_observable),
                 "finalized": False,
                 "quality": None,
+                "learning_mode": _learning_mode(learning_mode),
+                "actual_primary": _safe_name(actual_primary),
+                "shadow_primary": _safe_name(shadow_primary),
+                "shadow_changed": bool(shadow_changed) and bool(_safe_name(shadow_primary)),
             }
             if not compact_recommendations:
                 entry["result"] = "not_applicable"
@@ -302,6 +310,14 @@ class SkillExecutionAudit:
             "Primary skill loaded:",
             f"{primary_loaded} / {len(assessable)} assessable tasks",
         ])
+
+    def history(self) -> list[dict[str, Any]]:
+        """Return normalized bounded audit metadata for derived aggregators."""
+        try:
+            with self._lock:
+                return self._load_state()["entries"]
+        except Exception:
+            return []
 
     def quality_summary_text(self, limit: int = 20) -> str:
         """Render aggregate routing-quality statistics from bounded audit state."""
@@ -548,6 +564,11 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
         "execution_observable": bool(value.get("execution_observable")),
         "finalized": bool(value.get("finalized")),
         "quality": normalize_quality(value.get("quality")),
+        "learning_mode": _learning_mode(value.get("learning_mode")),
+        "actual_primary": _safe_name(value.get("actual_primary")),
+        "shadow_primary": _safe_name(value.get("shadow_primary")),
+        "shadow_changed": bool(value.get("shadow_changed"))
+        and bool(_safe_name(value.get("shadow_primary"))),
     }
     return normalized
 
@@ -613,6 +634,11 @@ def _safe_name(value: Any) -> str:
 
 def _opaque_id(value: Any) -> str:
     return " ".join(str(value or "").split())[:200]
+
+
+def _learning_mode(value: Any) -> str:
+    mode = str(value or "off").casefold()
+    return mode if mode in {"off", "shadow"} else "off"
 
 
 def _enforcement_mode(value: Any) -> str:
