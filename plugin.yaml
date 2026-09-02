@@ -1,0 +1,77 @@
+name: skill-router
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: Keep a profile-specific plan for routing tasks to installed skills.
+author: Hermes Skill Router contributors
+license: MIT
+tags: [skills, routing, openviking, profiles, orchestration]
+provides_hooks:
+  - on_session_start
+  - on_skill_lifecycle
+  - pre_llm_call
+config_schema:
+  routing_mode:
+    type: str
+    default: model
+    description: "Routing mode: model or deterministic."
+  deep_refresh_on_start:
+    type: bool
+    default: true
+    description: Analyze all changed skills with the configured auxiliary model when a session starts.
+  rescan_interval_seconds:
+    type: int
+    default: 60
+    description: Minimum interval between catalog freshness checks.
+  max_skills_per_task:
+    type: int
+    default: 4
+    description: Maximum number of skills recommended for one task.
+  max_skill_chars:
+    type: int
+    default: 20000
+    description: Maximum SKILL.md characters analyzed per skill.
+  analysis_batch_size:
+    type: int
+    default: 6
+    description: Number of changed skills analyzed in one auxiliary-model request.
+  analysis_model_timeout_seconds:
+    type: int
+    default: 25
+    description: Deep-analysis call timeout, capped at 30 seconds for clean unload.
+  routing_catalog_chars:
+    type: int
+    default: 60000
+    description: Maximum compact routing-plan characters supplied to the auxiliary model.
+  routing_model_timeout_seconds:
+    type: int
+    default: 20
+    description: Per-turn planner timeout, capped below Hermes hook timeout.
+  openviking_enabled:
+    type: bool
+    default: true
+    description: Sync skill mirrors and query OpenViking with fail-open fallback.
+  openviking_url:
+    type: str
+    default: ""
+    description: OpenViking server URL; empty uses OPENVIKING_URL, OPENVIKING_ENDPOINT, or localhost.
+  openviking_timeout_seconds:
+    type: int
+    default: 10
+    description: Background OpenViking request timeout, capped at ten seconds.
+  openviking_retrieval_limit:
+    type: int
+    default: 12
+    description: Maximum OpenViking skill hits considered per task.
+  openviking_routing_timeout_seconds:
+    type: int
+    default: 3
+    description: Per-turn OpenViking retrieval timeout, capped at five seconds.
+  openviking_score_threshold:
+    type: float
+    default: 0.15
+    description: Minimum OpenViking skill retrieval score.
+  openviking_plan_uri:
+    type: str
+    default: "viking://~/resources/hermes-skill-router/{profile}/plan.md"
+    description: OpenViking resource URI for the generated routing plan.
