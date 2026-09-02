@@ -16,6 +16,13 @@ class FullCtx:
         pass
 
 
+class RejectGuardCtx(FullCtx):
+    def register_hook(self, name, callback):
+        if name == "pre_tool_call":
+            raise ValueError("unsupported hook")
+        super().register_hook(name, callback)
+
+
 class RejectAuditCtx(FullCtx):
     def register_hook(self, name, callback):
         if name == "post_tool_call":
@@ -62,9 +69,17 @@ def expected_skill_utils(**overrides):
     return SimpleNamespace(**values)
 
 
-def available_plugins(manager=None):
+def available_plugins(manager=None, valid_hooks=None):
     selected = manager or Manager()
-    return SimpleNamespace(get_plugin_manager=lambda: selected)
+    hooks = valid_hooks if valid_hooks is not None else {
+        "on_session_start",
+        "on_skill_lifecycle",
+        "pre_llm_call",
+        "pre_tool_call",
+        "post_tool_call",
+        "post_llm_call",
+    }
+    return SimpleNamespace(get_plugin_manager=lambda: selected, VALID_HOOKS=hooks)
 
 
 def test_all_expected_hermes_apis_report_full_status():
@@ -84,6 +99,7 @@ def test_all_expected_hermes_apis_report_full_status():
     assert capabilities.skill_lifecycle is True
     assert capabilities.auxiliary_tasks is True
     assert capabilities.skill_execution_audit is True
+    assert capabilities.skill_execution_guard is True
     assert compatibility.status_lines() == [
         "Hermes compatibility: full",
         "Raw skill reader: available",
@@ -91,6 +107,7 @@ def test_all_expected_hermes_apis_report_full_status():
         "Lifecycle support: available",
         "Auxiliary tasks: available",
         "Skill execution audit: available",
+        "Skill execution guard: available",
     ]
 
 
@@ -183,6 +200,86 @@ def test_incompatible_skill_utility_call_degrades_to_metadata_only(tmp_path):
     assert compatibility.capabilities.status == "degraded"
 
 
+def test_execution_guard_hook_forwards_sanitized_metadata_and_directive():
+    ctx = FullCtx()
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+    calls = []
+
+    def callback(**kwargs):
+        calls.append(kwargs)
+        return {"action": "block", "message": "Load a skill first."}
+
+    registered = compatibility.register_skill_execution_guard(callback)
+    directive = ctx.hooks["pre_tool_call"](
+        tool_name="skill_view",
+        args={"name": "github", "token": "SECRET"},
+        task_id="task",
+        turn_id="turn",
+        session_id="session",
+        tool_call_id="call",
+        api_request_id="request",
+    )
+
+    assert registered is True
+    assert directive == {"action": "block", "message": "Load a skill first."}
+    assert calls == [{
+        "tool_name": "skill_view",
+        "args": {"name": "github", "loads_primary_document": True},
+        "task_id": "task",
+        "turn_id": "turn",
+        "session_id": "session",
+        "tool_call_id": "call",
+        "api_request_id": "request",
+    }]
+    assert "SECRET" not in repr(calls)
+
+
+def test_execution_guard_is_unavailable_when_hook_catalog_lacks_pre_tool_call():
+    ctx = FullCtx()
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(valid_hooks={"post_tool_call", "post_llm_call"}),
+        ),
+    )
+
+    registered = compatibility.register_skill_execution_guard(lambda **kwargs: None)
+
+    assert registered is False
+    assert "pre_tool_call" not in ctx.hooks
+    assert compatibility.capabilities.skill_execution_guard is False
+    assert "Skill execution guard: unavailable" in compatibility.status_lines()
+
+
+def test_execution_guard_registration_failure_is_feature_detected():
+    ctx = RejectGuardCtx()
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+
+    registered = compatibility.register_skill_execution_guard(lambda **kwargs: None)
+
+    assert registered is False
+    assert compatibility.capabilities.skill_execution_guard is False
+    assert compatibility.capabilities.status == "degraded"
+    assert "Skill execution guard: unavailable" in compatibility.status_lines()
+    assert any(
+        "skill execution guard registration" in issue
+        for issue in compatibility.capabilities.issues
+    )
+
+
 def test_execution_audit_hooks_forward_only_required_metadata():
     ctx = FullCtx()
     compatibility = HermesCompatibility(
@@ -220,10 +317,11 @@ def test_execution_audit_hooks_forward_only_required_metadata():
     assert registered is True
     assert tool_calls == [{
         "tool_name": "skill_view",
-        "args": {"name": "github"},
+        "args": {"name": "github", "loads_primary_document": True},
         "task_id": "task",
         "turn_id": "turn",
         "session_id": "session",
+        "tool_call_id": "",
         "status": "ok",
     }]
     assert turns == [{
@@ -270,8 +368,10 @@ def test_missing_host_features_report_degraded_status():
     assert capabilities.skill_lifecycle is False
     assert capabilities.auxiliary_tasks is False
     assert capabilities.skill_execution_audit is False
+    assert capabilities.skill_execution_guard is False
     assert "Lifecycle support: unavailable" in compatibility.status_lines()
     assert "Auxiliary tasks: unavailable" in compatibility.status_lines()
+    assert "Skill execution guard: unavailable" in compatibility.status_lines()
 
 
 def test_full_reader_resolves_local_and_plugin_skills(tmp_path):

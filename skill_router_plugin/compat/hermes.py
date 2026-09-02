@@ -26,6 +26,7 @@ class CompatibilityCapabilities:
     auxiliary_tasks: bool
     skills_tool_bootstrap: bool
     skill_execution_audit: bool
+    skill_execution_guard: bool
     issues: tuple[str, ...]
 
     @property
@@ -37,6 +38,7 @@ class CompatibilityCapabilities:
             self.skill_lifecycle,
             self.auxiliary_tasks,
             self.skill_execution_audit,
+            self.skill_execution_guard,
         )
         return "full" if all(required) else "degraded"
 
@@ -60,6 +62,7 @@ class HermesCompatibility:
         self._skill_lifecycle = callable(getattr(ctx, "register_hook", None))
         self._auxiliary_tasks = callable(getattr(ctx, "register_auxiliary_task", None))
         self._skill_execution_audit = callable(getattr(ctx, "register_hook", None))
+        self._skill_execution_guard = callable(getattr(ctx, "register_hook", None))
         self._skills_tool_bootstrap = False
         self._detect_internal_apis()
 
@@ -73,6 +76,7 @@ class HermesCompatibility:
             auxiliary_tasks=self._auxiliary_tasks,
             skills_tool_bootstrap=self._skills_tool_bootstrap,
             skill_execution_audit=self._skill_execution_audit,
+            skill_execution_guard=self._skill_execution_guard,
             issues=tuple(self._issues),
         )
 
@@ -84,6 +88,7 @@ class HermesCompatibility:
         lifecycle = "available" if capabilities.skill_lifecycle else "unavailable"
         auxiliary = "available" if capabilities.auxiliary_tasks else "unavailable"
         audit = "available" if capabilities.skill_execution_audit else "unavailable"
+        guard = "available" if capabilities.skill_execution_guard else "unavailable"
         return [
             f"Hermes compatibility: {capabilities.status}",
             f"Raw skill reader: {raw}",
@@ -91,6 +96,7 @@ class HermesCompatibility:
             f"Lifecycle support: {lifecycle}",
             f"Auxiliary tasks: {auxiliary}",
             f"Skill execution audit: {audit}",
+            f"Skill execution guard: {guard}",
         ]
 
     def readiness_hints(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -150,6 +156,36 @@ class HermesCompatibility:
             return False
         return True
 
+    def register_skill_execution_guard(self, callback: Callable[..., Any]) -> bool:
+        """Register the directive hook used by the turn-scoped execution guard."""
+        if not self._skill_execution_guard:
+            return False
+
+        def on_pre_tool_call(**kwargs: Any) -> Any:
+            tool_name = str(kwargs.get("tool_name") or "")
+            raw_args = kwargs.get("args")
+            safe_args: dict[str, Any] = {}
+            if tool_name == "skill_view" and isinstance(raw_args, dict):
+                safe_args["name"] = raw_args.get("name") or raw_args.get("skill_name")
+                safe_args["loads_primary_document"] = not bool(raw_args.get("file_path"))
+            return callback(
+                tool_name=tool_name,
+                args=safe_args,
+                task_id=kwargs.get("task_id", ""),
+                turn_id=kwargs.get("turn_id", ""),
+                session_id=kwargs.get("session_id", ""),
+                tool_call_id=kwargs.get("tool_call_id", ""),
+                api_request_id=kwargs.get("api_request_id", ""),
+            )
+
+        try:
+            self.ctx.register_hook("pre_tool_call", on_pre_tool_call)
+        except Exception as exc:
+            self._skill_execution_guard = False
+            self._record_issue("skill execution guard registration", exc)
+            return False
+        return True
+
     def register_skill_execution_audit(
         self,
         post_tool_callback: Callable[..., Any],
@@ -161,12 +197,19 @@ class HermesCompatibility:
 
         def on_post_tool_call(**kwargs: Any) -> None:
             if self._skill_execution_audit:
+                tool_name = str(kwargs.get("tool_name") or "")
+                raw_args = kwargs.get("args")
+                safe_args: dict[str, Any] = {}
+                if tool_name == "skill_view" and isinstance(raw_args, dict):
+                    safe_args["name"] = raw_args.get("name") or raw_args.get("skill_name")
+                    safe_args["loads_primary_document"] = not bool(raw_args.get("file_path"))
                 post_tool_callback(
-                    tool_name=kwargs.get("tool_name", ""),
-                    args=kwargs.get("args"),
+                    tool_name=tool_name,
+                    args=safe_args,
                     task_id=kwargs.get("task_id", ""),
                     turn_id=kwargs.get("turn_id", ""),
                     session_id=kwargs.get("session_id", ""),
+                    tool_call_id=kwargs.get("tool_call_id", ""),
                     status=kwargs.get("status", ""),
                 )
 
@@ -255,6 +298,18 @@ class HermesCompatibility:
 
         try:
             plugins = self._module_loader("hermes_cli.plugins")
+        except Exception as exc:
+            self._skill_execution_guard = False
+            self._record_issue("Hermes hook catalog", exc)
+            self._record_issue("plugin skill lookup", exc)
+            return
+
+        valid_hooks = getattr(plugins, "VALID_HOOKS", None)
+        if not isinstance(valid_hooks, (set, frozenset, list, tuple)) or "pre_tool_call" not in valid_hooks:
+            self._skill_execution_guard = False
+            self._issues.append("pre_tool_call is absent from the Hermes hook catalog")
+
+        try:
             manager_factory = getattr(plugins, "get_plugin_manager", None)
             if not callable(manager_factory):
                 raise AttributeError("get_plugin_manager is unavailable")

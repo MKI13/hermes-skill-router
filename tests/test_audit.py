@@ -195,6 +195,29 @@ def test_interrupted_turn_becomes_unknown_when_next_turn_starts():
     assert first["primary_loaded"] is None
 
 
+def test_linked_file_and_unrecommended_skill_loads_are_not_persisted():
+    secret = "SECRET-UNRECOMMENDED-SKILL"
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    decision(audit, [recommendation("github")])
+
+    audit.observe_tool_call(
+        tool_name="skill_view",
+        args={"name": "github", "loads_primary_document": False},
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        status="ok",
+    )
+    observe(audit, secret)
+    finalize(audit)
+
+    entry = load_entry(ctx)
+    assert entry["executions"] == []
+    assert entry["result"] == "missed"
+    assert secret not in repr(entry)
+
+
 def test_failed_skill_view_is_not_counted_as_loaded():
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)
@@ -299,6 +322,44 @@ def test_prompt_secrets_tool_results_and_extra_arguments_are_not_persisted():
     assert "reason" not in persisted
 
 
+def test_enforcement_summary_updates_without_persisting_guard_payloads():
+    secret = "SECRET-GUARD-PAYLOAD"
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        recommended=[recommendation("github")],
+        enforcement_mode="primary",
+        enforcement_status="pending",
+        execution_observable=True,
+    )
+
+    audit.update_enforcement(
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        enforcement={
+            "mode": "primary",
+            "status": "satisfied",
+            "block_count": 1,
+            "primary_loaded_before_task_tools": True,
+            "tool_output": secret,
+            "required_skills": [secret],
+        },
+    )
+
+    entry = load_entry(ctx)
+    assert entry["enforcement_mode"] == "primary"
+    assert entry["enforcement_status"] == "satisfied"
+    assert entry["block_count"] == 1
+    assert entry["primary_loaded_before_task_tools"] is True
+    assert secret not in repr(entry)
+
+
 def test_last_output_reports_partial_primary_result():
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)
@@ -309,6 +370,8 @@ def test_last_output_reports_partial_primary_result():
     output = audit.last_text()
 
     assert "Policy: unknown" in output
+    assert "Enforcement: off" in output
+    assert "Guard: not_required" in output
     assert "1. github [PRIMARY]" in output
     assert "2. code-review [SUPPORTING]" in output
     assert "github: yes" in output

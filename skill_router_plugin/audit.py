@@ -29,6 +29,10 @@ class SkillExecutionAudit:
         method: str,
         recommended: list[dict[str, Any]],
         policy_status: str = "unknown",
+        enforcement_mode: str = "off",
+        enforcement_status: str = "not_required",
+        block_count: int = 0,
+        primary_loaded_before_task_tools: bool | None = None,
         execution_observable: bool,
     ) -> None:
         """Append one bounded decision without retaining the full user prompt."""
@@ -43,6 +47,12 @@ class SkillExecutionAudit:
                 "profile": str(getattr(self.ctx, "profile_name", "default"))[:100],
                 "method": str(method or "unknown")[:40],
                 "policy_status": _policy_status(policy_status),
+                "enforcement_mode": _enforcement_mode(enforcement_mode),
+                "enforcement_status": _enforcement_status(enforcement_status),
+                "block_count": _block_count(block_count),
+                "primary_loaded_before_task_tools": _optional_bool(
+                    primary_loaded_before_task_tools
+                ),
                 "task_hash": hashlib.sha256(task.encode("utf-8", errors="replace")).hexdigest(),
                 "recommended": compact_recommendations,
                 "executions": [],
@@ -79,6 +89,8 @@ class SkillExecutionAudit:
         del kwargs
         if tool_name != "skill_view" or not isinstance(args, dict):
             return
+        if args.get("loads_primary_document") is False:
+            return
         name = _skill_name(args)
         if not name:
             return
@@ -89,6 +101,13 @@ class SkillExecutionAudit:
                     state["entries"], task_id=task_id, turn_id=turn_id, session_id=session_id
                 )
                 if entry is None:
+                    return
+                recommended_names = {
+                    str(item.get("name") or "")
+                    for item in entry.get("recommended", [])
+                    if isinstance(item, dict)
+                }
+                if name not in recommended_names:
                     return
                 success = str(status).casefold() == "ok"
                 executions = entry["executions"]
@@ -105,6 +124,35 @@ class SkillExecutionAudit:
                 elif success and not existing.get("success"):
                     existing["success"] = True
                     existing["timestamp"] = _utc_now()
+                self._save_state(state)
+        except Exception:
+            return
+
+    def update_enforcement(
+        self,
+        *,
+        task_id: str = "",
+        turn_id: str = "",
+        session_id: str = "",
+        enforcement: dict[str, Any] | None,
+    ) -> None:
+        """Merge compact guard metadata into the matching open audit entry."""
+        if not isinstance(enforcement, dict):
+            return
+        try:
+            with self._lock:
+                state = self._load_state()
+                entry = _find_open_entry(
+                    state["entries"], task_id=task_id, turn_id=turn_id, session_id=session_id
+                )
+                if entry is None:
+                    return
+                entry["enforcement_mode"] = _enforcement_mode(enforcement.get("mode"))
+                entry["enforcement_status"] = _enforcement_status(enforcement.get("status"))
+                entry["block_count"] = _block_count(enforcement.get("block_count"))
+                entry["primary_loaded_before_task_tools"] = _optional_bool(
+                    enforcement.get("primary_loaded_before_task_tools")
+                )
                 self._save_state(state)
         except Exception:
             return
@@ -190,6 +238,8 @@ class SkillExecutionAudit:
             f"Task: {task_label}",
             f"Routing method: {entry.get('method', 'unknown')}",
             f"Policy: {entry.get('policy_status', 'unknown')}",
+            f"Enforcement: {entry.get('enforcement_mode', 'off')}",
+            f"Guard: {entry.get('enforcement_status', 'not_required')}",
             "",
             "Recommended:",
         ]
@@ -212,8 +262,14 @@ class SkillExecutionAudit:
             lines.append("none")
         primary = entry.get("primary_loaded")
         primary_text = "yes" if primary is True else "no" if primary is False else "unknown"
+        before_tools = entry.get("primary_loaded_before_task_tools")
+        before_tools_text = (
+            "yes" if before_tools is True else "no" if before_tools is False else "unknown"
+        )
         lines.extend([
             "",
+            f"Primary loaded before task tools: {before_tools_text}",
+            f"Blocks: {entry.get('block_count', 0)}",
             f"Result: {entry.get('result', 'unknown')}",
             f"Primary loaded: {primary_text}",
         ])
@@ -335,6 +391,12 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
         "profile": str(value.get("profile") or "default")[:100],
         "method": str(value.get("method") or "unknown")[:40],
         "policy_status": _policy_status(value.get("policy_status")),
+        "enforcement_mode": _enforcement_mode(value.get("enforcement_mode")),
+        "enforcement_status": _enforcement_status(value.get("enforcement_status")),
+        "block_count": _block_count(value.get("block_count")),
+        "primary_loaded_before_task_tools": _optional_bool(
+            value.get("primary_loaded_before_task_tools")
+        ),
         "task_hash": str(value.get("task_hash") or "")[:64],
         "recommended": recommended,
         "executions": executions,
@@ -406,6 +468,37 @@ def _safe_name(value: Any) -> str:
 
 def _opaque_id(value: Any) -> str:
     return " ".join(str(value or "").split())[:200]
+
+
+def _enforcement_mode(value: Any) -> str:
+    selected = str(value or "off")
+    return selected if selected in {"off", "warn", "primary", "all"} else "off"
+
+
+def _enforcement_status(value: Any) -> str:
+    selected = str(value or "not_required")
+    allowed = {
+        "not_required",
+        "policy_blocked",
+        "pending",
+        "satisfied",
+        "warned",
+        "blocked",
+        "exhausted",
+        "unavailable",
+        "error",
+    }
+    return selected if selected in allowed else "error"
+
+
+def _block_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(value, 5))
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _policy_status(value: Any) -> str:

@@ -10,6 +10,7 @@ provides_hooks:
   - on_session_start
   - on_skill_lifecycle
   - pre_llm_call
+  - pre_tool_call
   - post_tool_call
   - post_llm_call
 config_schema:
@@ -33,6 +34,14 @@ config_schema:
     type: int
     default: 100
     description: Maximum profile-local routing audit entries, clamped from 10 to 1000.
+  enforcement_mode:
+    type: str
+    default: warn
+    description: "Execution guard mode: off, warn, primary, or all."
+  max_enforcement_blocks_per_turn:
+    type: int
+    default: 2
+    description: Maximum execution guard blocks per turn before fail-open, clamped from 1 to 5.
   max_skill_chars:
     type: int
     default: 20000

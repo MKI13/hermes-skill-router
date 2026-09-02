@@ -24,15 +24,16 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
 7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
-9. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
-10. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls with the validated routing decision. The audit is passive and never blocks, retries, or changes ranking.
-11. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
+10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
+11. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls and compact guard outcomes with the validated routing decision. The audit itself never blocks, retries, or changes ranking.
+12. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
 Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
 
 ## Requirements
 
-- Hermes Agent with native plugin hooks, `ctx.llm`, plugin auxiliary tasks, system-prompt sections, and `on_skill_lifecycle` support.
+- Hermes Agent with native plugin hooks including `pre_tool_call`, `post_tool_call`, and `post_llm_call`, plus `ctx.llm`, plugin auxiliary tasks, system-prompt sections, and `on_skill_lifecycle` support. Missing execution hooks degrade safely.
 - The Hermes `skills` toolset enabled.
 - Python 3.11 or newer (Hermes runtime).
 - Optional: OpenViking `0.4.17.1` with `/api/v1/skills`, `/api/v1/skills/find`, and `/api/v1/content/write`.
@@ -133,6 +134,7 @@ Inside a session:
 /skill-router inspect github
 /skill-router audit
 /skill-router audit last
+/skill-router enforcement
 /skill-router recommend research current inference providers
 ```
 
@@ -145,6 +147,7 @@ hermes skill-router plan
 hermes skill-router inspect github
 hermes skill-router audit
 hermes skill-router audit last
+hermes skill-router enforcement
 hermes skill-router recommend research current inference providers
 ```
 
@@ -170,9 +173,15 @@ Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness 
 
 Declared `requirements.skills` are expanded transitively and loaded before their dependent while the dependent keeps its primary role. Required dependencies displace optional supporting skills when the configured limit is reached. Missing or unusable dependencies block the affected primary, dependency cycles produce a degraded deterministic order and warning, and declared alternatives are resolved by explicit request, readiness, then original selection position. Policy statuses are `valid`, `adjusted`, `degraded`, and `blocked`.
 
+## Controlled skill execution
+
+`skill_router_plugin/enforcement.py` tracks only the final policy plan for the current Hermes turn. The default `warn` mode allows every tool but records a premature task-tool attempt. `primary` requires the dependency-ordered plan through the primary skill, while `all` requires every executable final selection in policy order. `off` disables checks without disabling audit. Only successful `skill_view` calls satisfy the guard; `skill_view`, `skills_list`, and additional non-required skill loads remain allowed.
+
+Hard modes use Hermes' public `pre_tool_call` block directive. Calls from one Hermes API request share one budget slot, so parallel tool calls cannot bypass the guard. After the configured block limit the turn becomes `exhausted` and fails open, preventing a permanent loop. Missing turn or API-request identity, unavailable hooks, and guard exceptions caught by the plugin also fail open. A blocked policy plan is never enforced. `/skill-router enforcement` reports capability, configured mode and limit, and compact current-turn state without changing configuration.
+
 ## Routing execution audit
 
-Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, policy status, final validated recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
+Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, policy status, final validated recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. It also stores enforcement mode/status, block count, and whether the primary loaded before the first allowed task tool. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
 
 `/skill-router audit` summarizes the latest 20 entries, `/skill-router audit last` shows the latest recommendation and load result, and `/skill-router audit N` summarizes the latest `N` entries. The history is profile-local and bounded. Only a SHA-256 task hash is retained; prompts, task previews, responses, skill contents, tool results, errors, files, and credentials are never stored.
 
@@ -191,6 +200,8 @@ plugins:
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         max_audit_entries: 100          # clamped to 10-1000
+        enforcement_mode: warn          # off | warn | primary | all
+        max_enforcement_blocks_per_turn: 2  # clamped to 1-5
         max_skill_chars: 20000
         analysis_batch_size: 6
         analysis_model_timeout_seconds: 25
@@ -208,7 +219,7 @@ plugins:
 ## Security and trust
 
 - The plugin never injects copied OpenViking `SKILL.md` content as executable instructions. OpenViking returns ranking evidence; Hermes loads winners through native `skill_view`.
-- Execution-audit observers discard prompt, response, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, routing/policy statuses, and outcomes.
+- Execution observers discard prompt, response, task-tool arguments, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, routing/policy/enforcement statuses, bounded block counts, and outcomes.
 - A policy failure discards the unvalidated selection and returns a degraded empty plan; it never falls back to raw model output.
 - Catalog documents are explicitly labeled untrusted data in auxiliary-model analysis prompts.
 - OpenViking mirror names include the Hermes profile and a stable digest. Mirrors removed from the effective Hermes catalog are deleted only when their names were previously recorded as router-owned.
@@ -222,7 +233,7 @@ Hermes currently has no documented public API that simultaneously provides exact
 
 All version-dependent Hermes imports and path lookup calls are isolated in `skill_router_plugin/compat/hermes.py` and detected by capability rather than version number. This plugin uses public `skills_list` as the visibility allowlist, then the compatibility layer uses the ordered and quarantined Hermes iterators to read approved files directly. It never invokes `skill_view` during inventory, so scans cannot run skill setup or alter usage telemetry. If a required internal API is unavailable or incompatible, routing safely falls back to catalog metadata only.
 
-`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, auxiliary-task, and skill-execution-audit availability. Audit requires both public `post_tool_call` and `post_llm_call` hooks; missing hooks disable observation without affecting routing.
+`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, auxiliary-task, execution-audit, and execution-guard availability. Audit requires the public `post_tool_call` and `post_llm_call` hooks. Hard enforcement additionally requires `pre_tool_call`; if its registration fails, the guard reports unavailable and fails open without affecting routing or audit.
 
 Additional limitations:
 

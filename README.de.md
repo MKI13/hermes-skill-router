@@ -24,9 +24,10 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profile}/plan.md`.
 7. Vor jeder Aufgabe liefert OpenViking semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge.
 8. Ein deterministisches Policy Gate prüft Katalog-Readiness, explizite Benutzerwünsche, Alternativen, deklarierte Skill-Abhängigkeiten, Rollen, Dependency-Reihenfolge und das Skill-Limit. Modellausgaben umgehen diese Schicht nicht.
-9. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
-10. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe passiv der validierten Routing-Entscheidung zu. Der Audit blockiert nichts, wiederholt nichts und verändert kein Ranking.
-11. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+9. Der finale Policy-Plan initialisiert einen turn-isolierten Execution Guard. Der Standardmodus warnt nur; optionale harte Modi verlangen über `pre_tool_call` erfolgreiche geordnete `skill_view`-Aufrufe vor Task-Tools.
+10. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
+11. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe und kompakte Guard-Ergebnisse der validierten Routing-Entscheidung zu. Der Audit selbst blockiert nichts, wiederholt nichts und verändert kein Ranking.
+12. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
 Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
 
@@ -100,6 +101,7 @@ In einer Session:
 /skill-router inspect github
 /skill-router audit
 /skill-router audit last
+/skill-router enforcement
 /skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
 
@@ -112,6 +114,7 @@ hermes skill-router plan
 hermes skill-router inspect github
 hermes skill-router audit
 hermes skill-router audit last
+hermes skill-router enforcement
 hermes skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
 
@@ -137,9 +140,15 @@ Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars`
 
 Deklarierte `requirements.skills` werden transitiv ergänzt und vor dem abhängigen Skill geladen, während dieser seine Primary-Rolle behält. Erforderliche Dependencies verdrängen optionale Supporting-Skills am Limit. Fehlende oder unbrauchbare Dependencies blockieren den betroffenen Primary. Zyklen ergeben eine degradierte deterministische Reihenfolge mit Warnung. Deklarierte Alternativen werden nach explizitem Wunsch, Readiness und ursprünglicher Auswahlposition aufgelöst. Policy-Statuswerte sind `valid`, `adjusted`, `degraded` und `blocked`.
 
+## Kontrollierte Skill-Ausführung
+
+`skill_router_plugin/enforcement.py` verfolgt ausschließlich den finalen Policy-Plan des aktuellen Hermes-Turns. Der Standardmodus `warn` erlaubt jedes Tool, erfasst aber einen verfrühten Task-Tool-Aufruf. `primary` verlangt den dependency-geordneten Plan bis einschließlich Primary-Skill, während `all` alle ausführbaren finalen Auswahlen in Policy-Reihenfolge verlangt. `off` deaktiviert die Prüfung, ohne den Audit abzuschalten. Nur erfolgreiche `skill_view`-Aufrufe erfüllen den Guard; `skill_view`, `skills_list` und zusätzliche nicht verlangte Skill-Ladevorgänge bleiben erlaubt.
+
+Die harten Modi verwenden die öffentliche `pre_tool_call`-Block-Direktive von Hermes. Aufrufe aus derselben Hermes-API-Anfrage teilen sich einen Budgetplatz, sodass parallele Tool-Aufrufe den Guard nicht umgehen. Nach dem konfigurierten Block-Limit wechselt der Turn zu `exhausted` und läuft offen weiter, sodass keine permanente Block-Schleife entsteht. Fehlende Turn- oder API-Request-Identität, nicht verfügbare Hooks und vom Plugin abgefangene Guard-Exceptions laufen ebenfalls offen weiter. Ein blockierter Policy-Plan wird nie enforced. `/skill-router enforcement` zeigt Capability, Modus, Limit und kompakten Zustand des aktuellen Turns, ohne die Konfiguration zu verändern.
+
 ## Routing-Ausführungs-Audit
 
-Für jeden gerouteten Turn speichert der Router Task-Hash, undurchsichtige Hermes-Task-/Turn-/Session-IDs, Routing-Methode, Policy-Status, finale validierte Skill-Namen und Rollen, erfolgreiche oder fehlgeschlagene `skill_view`-Beobachtungen, Ergebnis und den Ladezustand des Primary-Skills. Mögliche Ergebnisse sind `complete`, `partial`, `missed`, `not_applicable` und `unknown`. Ohne beide benötigten Observer-Hooks oder bei abgebrochener Finalisierung bleibt die Bewertung `unknown`.
+Für jeden gerouteten Turn speichert der Router Task-Hash, undurchsichtige Hermes-Task-/Turn-/Session-IDs, Routing-Methode, Policy-Status, finale validierte Skill-Namen und Rollen, erfolgreiche oder fehlgeschlagene `skill_view`-Beobachtungen, Ergebnis und den Ladezustand des Primary-Skills. Zusätzlich werden Enforcement-Modus und -Status, Block-Anzahl und der Primary-Ladezustand vor dem ersten erlaubten Task-Tool gespeichert. Mögliche Ergebnisse sind `complete`, `partial`, `missed`, `not_applicable` und `unknown`. Ohne beide benötigten Observer-Hooks oder bei abgebrochener Finalisierung bleibt die Bewertung `unknown`.
 
 `/skill-router audit` fasst die letzten 20 Einträge zusammen, `/skill-router audit last` zeigt die letzte Empfehlung mit Ladeergebnis und `/skill-router audit N` fasst die letzten `N` Einträge zusammen. Die Historie ist profilspezifisch und begrenzt. Nur ein SHA-256-Task-Hash bleibt erhalten; Prompts, Task-Previews, Antworten, Skill-Inhalte, Tool-Ergebnisse, Fehlermeldungen, Dateien und Zugangsdaten werden nicht gespeichert.
 
@@ -156,6 +165,8 @@ plugins:
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         max_audit_entries: 100          # begrenzt auf 10-1000
+        enforcement_mode: warn          # off | warn | primary | all
+        max_enforcement_blocks_per_turn: 2  # begrenzt auf 1-5
         max_skill_chars: 20000
         analysis_batch_size: 6
         analysis_model_timeout_seconds: 25
@@ -173,13 +184,13 @@ plugins:
 ## Sicherheit und bekannte Grenzen
 
 - OpenViking liefert nur Retrieval-Hinweise und Skill-Namen. Die dort gespeicherte Kopie wird nicht direkt als ausführbare Anweisung eingefügt.
-- Die Audit-Observer verwerfen Prompt-, Antwort-, Tool-Ergebnis- und Fehlerdaten bereits an der Compatibility-Grenze. Persistiert werden nur Identifikatoren, Task-Hashes, Skill-Namen, Rollen, Reihenfolge, Zeitpunkte, Routing-/Policy-Statuswerte und Ergebnisse.
+- Die Ausführungs-Observer verwerfen Prompt-, Antwort-, Task-Tool-Argument-, Tool-Ergebnis- und Fehlerdaten bereits an der Compatibility-Grenze. Persistiert werden nur Identifikatoren, Task-Hashes, Skill-Namen, Rollen, Reihenfolge, Zeitpunkte, Routing-/Policy-/Enforcement-Statuswerte, begrenzte Block-Zähler und Ergebnisse.
 - Bei einem Policy-Fehler wird die ungeprüfte Auswahl verworfen und ein leerer degradierter Plan geliefert; rohe Modellausgaben werden nie als Fallback injiziert.
 - Entfernte Spiegel werden nur gelöscht, wenn ihr Name zuvor als Router-Eigentum im Profilzustand gespeichert wurde.
 - Die HTTP-Brücke blockiert URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, Metadaten-/Link-Local-Ziele und übergroße Antworten. Zugangsdaten außerhalb von Loopback erfordern HTTPS.
 - Das Hilfsmodell erhält Skill-Dokumente ausdrücklich als nicht vertrauenswürdige Analysedaten.
 - Hermes besitzt derzeit keine öffentliche Plugin-API, die gleichzeitig exakte Rohdateien, alle Quellen, Provenienz und eine erzwungene Cache-Aktualisierung anbietet. Alle versionsabhängigen Hermes-Imports und Pfadzugriffe liegen deshalb in `skill_router_plugin/compat/hermes.py` und werden über Feature Detection geprüft. Fehlt eine benötigte interne API oder ist sie inkompatibel, verwendet der Router ausschließlich Katalogmetadaten.
-- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook, Auxiliary Tasks und Skill-Ausführungs-Audit. Der Audit benötigt die öffentlichen Hooks `post_tool_call` und `post_llm_call`; fehlen sie, bleibt das Routing unverändert aktiv.
+- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook, Auxiliary Tasks, Skill-Ausführungs-Audit und Execution Guard. Der Audit benötigt die öffentlichen Hooks `post_tool_call` und `post_llm_call`. Hartes Enforcement benötigt zusätzlich `pre_tool_call`; schlägt dessen Registrierung fehl, meldet der Guard `unavailable` und läuft offen weiter, ohne Routing oder Audit zu beeinträchtigen.
 - Der Lifecycle-Hook meldet derzeit kein Löschen oder Deinstallieren. Die regelmäßige Katalogprüfung erkennt solche Änderungen später.
 - Änderungen innerhalb einer `SKILL.md` können wegen Hermes-Cachezeiten ungefähr 30 Sekunden verzögert erscheinen.
 - Ein bereits bestehender System-Prompt wird aus Cache-Gründen nicht verändert. Die dynamische Empfehlung wird trotzdem bei jedem Turn über `pre_llm_call` ergänzt.

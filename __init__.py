@@ -37,6 +37,7 @@ def register(ctx) -> None:
     )
     ctx.register_hook("on_session_start", runtime.on_session_start)
     compatibility.register_skill_lifecycle(runtime.on_skill_lifecycle)
+    compatibility.register_skill_execution_guard(runtime.on_pre_tool_call)
     compatibility.register_skill_execution_audit(
         runtime.on_post_tool_call,
         runtime.on_post_llm_call,
@@ -46,7 +47,9 @@ def register(ctx) -> None:
         name="skill-router",
         handler=runtime.command,
         description="Inspect, audit, refresh, or test the profile skill routing plan.",
-        args_hint="[status|refresh|plan|inspect <skill>|audit [last|N]|recommend <task>]",
+        args_hint=(
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|enforcement|recommend <task>]"
+        ),
     )
 
     def setup_cli(parser) -> None:
@@ -59,6 +62,7 @@ def register(ctx) -> None:
         inspect.add_argument("skill_name")
         audit = commands.add_parser("audit", help="Show recent routing execution audits")
         audit.add_argument("selector", nargs="?", default="")
+        commands.add_parser("enforcement", help="Show current execution guard state")
         recommend = commands.add_parser("recommend", help="Select skills for a sample task")
         recommend.add_argument("task", nargs="+")
 
@@ -77,6 +81,9 @@ def register(ctx) -> None:
             selector = getattr(args, "selector", "")
             print(runtime.command("audit" + (" " + selector if selector else "")))
             return 0
+        if action == "enforcement":
+            print(runtime.command("enforcement"))
+            return 0
         if action == "recommend":
             print(runtime.command("recommend " + " ".join(args.task)))
             return 0
@@ -86,7 +93,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|recommend}")
+        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|enforcement|recommend}")
         return 2
 
     ctx.register_cli_command(

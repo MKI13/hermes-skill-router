@@ -13,6 +13,7 @@ from typing import Any
 from .audit import SkillExecutionAudit
 from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
+from .enforcement import SkillExecutionGuard
 from .openviking import OpenVikingBridge
 from .planner import analyze_changed_skills, select_skills
 from .policy import apply_routing_policy, detect_explicit_skill_names
@@ -52,11 +53,13 @@ class SkillRouterRuntime:
         self.compatibility = compatibility or HermesCompatibility(ctx)
         self.openviking = OpenVikingBridge(ctx)
         self.audit = SkillExecutionAudit(ctx)
+        self.guard = SkillExecutionGuard()
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
         self._pending_reason = ""
         self._last_scan_monotonic = 0.0
+        self._invalid_enforcement_mode_reported = False
 
     def stop(self) -> None:
         """Stop and join the owned refresh worker before plugin unload completes."""
@@ -105,12 +108,37 @@ class SkillRouterRuntime:
             return
         self.request_deep_refresh(f"lifecycle:{action}:{skill_name}")
 
+    def on_pre_tool_call(self, **kwargs: Any) -> dict[str, str] | None:
+        """Apply the turn guard to sanitized pre-tool metadata."""
+        return self.guard.before_tool_call(**kwargs)
+
     def on_post_tool_call(self, **kwargs: Any) -> None:
-        """Observe sanitized ``skill_view`` completion metadata."""
+        """Observe sanitized tool completion metadata for guard and audit."""
+        guard_state = self.guard.after_tool_call(**kwargs)
         self.audit.observe_tool_call(**kwargs)
+        self.audit.update_enforcement(
+            task_id=str(kwargs.get("task_id") or ""),
+            turn_id=str(kwargs.get("turn_id") or ""),
+            session_id=str(kwargs.get("session_id") or ""),
+            enforcement=guard_state,
+        )
 
     def on_post_llm_call(self, **kwargs: Any) -> None:
-        """Finalize the matching audit entry after a completed turn."""
+        """Finalize guard and audit metadata after a completed turn."""
+        task_id = str(kwargs.get("task_id") or "")
+        turn_id = str(kwargs.get("turn_id") or "")
+        session_id = str(kwargs.get("session_id") or "")
+        guard_state = self.guard.finish_turn(
+            task_id=task_id,
+            turn_id=turn_id,
+            session_id=session_id,
+        )
+        self.audit.update_enforcement(
+            task_id=task_id,
+            turn_id=turn_id,
+            session_id=session_id,
+            enforcement=guard_state,
+        )
         self.audit.finalize_turn(**kwargs)
 
     def pre_llm_call(
@@ -156,6 +184,13 @@ class SkillRouterRuntime:
                 "executing and load every relevant skill with skill_view.\n[/Skill Router]"
             )
 
+        guard_state = self._guard_result(
+            task_id=task_id,
+            turn_id=turn_id,
+            session_id=session_id,
+            policy_status=str(policy.get("policy_status") or "degraded"),
+            selections=selected,
+        )
         self.audit.record_decision(
             task=task,
             task_id=task_id,
@@ -164,6 +199,12 @@ class SkillRouterRuntime:
             method=method,
             recommended=selected,
             policy_status=str(policy.get("policy_status") or "degraded"),
+            enforcement_mode=str(guard_state.get("mode") or "off"),
+            enforcement_status=str(guard_state.get("status") or "unavailable"),
+            block_count=int(guard_state.get("block_count") or 0),
+            primary_loaded_before_task_tools=guard_state.get(
+                "primary_loaded_before_task_tools"
+            ),
             execution_observable=self.compatibility.capabilities.skill_execution_audit,
         )
 
@@ -342,6 +383,8 @@ class SkillRouterRuntime:
         action = args[0].casefold() if args else "status"
         if action == "status":
             return self.status_text()
+        if action == "enforcement":
+            return self.enforcement_text()
         if action == "audit":
             detail = args[1].casefold() if len(args) > 1 else ""
             if detail == "last":
@@ -409,7 +452,7 @@ class SkillRouterRuntime:
             return "\n".join(lines)
         return (
             "Usage: /skill-router "
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|recommend <task>]"
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|enforcement|recommend <task>]"
         )
 
     def status_text(self) -> str:
@@ -449,6 +492,7 @@ class SkillRouterRuntime:
             f"Deep analysis: {snapshot.get('deep_analyzed_at') or 'never'}",
             f"Routing mode: {self._routing_mode()}",
             "Routing policy: enabled",
+            f"Enforcement mode: {self._enforcement_mode()}",
             f"Refresh running: {running}",
             f"Last changed/analyzed: {report.get('changed', 0)} / calls: {report.get('calls', 0)}",
             f"Last failures: {len(report.get('failures', [])) if isinstance(report.get('failures'), list) else 0}",
@@ -456,6 +500,32 @@ class SkillRouterRuntime:
             f"OpenViking failures: {len(ov_report.get('failed', [])) if isinstance(ov_report.get('failed'), list) else 0}",
             f"OpenViking plan written: {bool(report.get('openviking_plan_written'))}",
         ])
+
+    def enforcement_text(self) -> str:
+        """Render current guard diagnostics without changing configuration."""
+        available = self.compatibility.capabilities.skill_execution_guard
+        lines = [
+            "Skill Router Enforcement",
+            "",
+            f"Mode: {self._enforcement_mode()}",
+            f"Capability: {'available' if available else 'unavailable'}",
+            "Max blocks per turn: "
+            + str(self._int_setting("max_enforcement_blocks_per_turn", 2, minimum=1, maximum=5)),
+            "",
+        ]
+        current = self.guard.current()
+        if current is None:
+            lines.append("Current turn: none")
+            return "\n".join(lines)
+        lines.extend([
+            "Current turn:",
+            f"Status: {current.get('status', 'error')}",
+            f"Required: {', '.join(current.get('required_skills', [])) or 'none'}",
+            f"Loaded: {', '.join(current.get('loaded_skills', [])) or 'none'}",
+            f"Failed: {', '.join(current.get('failed_skills', [])) or 'none'}",
+            f"Blocks: {current.get('block_count', 0)}",
+        ])
+        return "\n".join(lines)
 
     def plan_text(self) -> str:
         """Render a compact human-readable plan."""
@@ -569,6 +639,37 @@ class SkillRouterRuntime:
         with self._lock:
             self.ctx.state.set(_STATE_KEY, bounded)
 
+    def _guard_result(
+        self,
+        *,
+        task_id: str,
+        turn_id: str,
+        session_id: str,
+        policy_status: str,
+        selections: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            return self.guard.start_turn(
+                task_id=task_id,
+                turn_id=turn_id,
+                session_id=session_id,
+                policy_status=policy_status,
+                selections=selections,
+                mode=self._enforcement_mode(),
+                max_blocks=self._int_setting(
+                    "max_enforcement_blocks_per_turn", 2, minimum=1, maximum=5
+                ),
+                available=self.compatibility.capabilities.skill_execution_guard,
+            )
+        except Exception:
+            logger.warning("Skill Router execution guard initialization failed", exc_info=True)
+            return {
+                "mode": self._enforcement_mode(),
+                "status": "unavailable",
+                "block_count": 0,
+                "primary_loaded_before_task_tools": None,
+            }
+
     def _policy_result(
         self,
         task: str,
@@ -599,6 +700,15 @@ class SkillRouterRuntime:
                 "policy_status": "degraded",
                 "changes": ["Policy validation failed; no skill recommendation was retained."],
             }
+
+    def _enforcement_mode(self) -> str:
+        mode = str(self.ctx.get_config("enforcement_mode", "warn") or "warn").casefold()
+        if mode in {"off", "warn", "primary", "all"}:
+            return mode
+        if not self._invalid_enforcement_mode_reported:
+            logger.warning("Invalid enforcement_mode %r; using warn", mode[:100])
+            self._invalid_enforcement_mode_reported = True
+        return "warn"
 
     def _routing_mode(self) -> str:
         mode = str(self.ctx.get_config("routing_mode", "model") or "model").casefold()

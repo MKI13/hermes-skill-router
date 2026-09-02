@@ -26,7 +26,10 @@ class Compatibility:
 
     @property
     def capabilities(self):
-        return SimpleNamespace(skill_execution_audit=self.status == "full")
+        return SimpleNamespace(
+            skill_execution_audit=self.status == "full",
+            skill_execution_guard=self.status == "full",
+        )
 
     def status_lines(self):
         available = self.status == "full"
@@ -37,6 +40,7 @@ class Compatibility:
             "Lifecycle support: available",
             "Auxiliary tasks: available",
             f"Skill execution audit: {'available' if available else 'unavailable'}",
+            f"Skill execution guard: {'available' if available else 'unavailable'}",
         ]
 
 
@@ -141,6 +145,16 @@ def test_status_reports_full_hermes_compatibility():
     assert "Auxiliary tasks: available" in status
 
 
+def test_invalid_enforcement_mode_falls_back_to_warn_with_visible_warning(caplog):
+    runtime = SkillRouterRuntime(Ctx({"enforcement_mode": "primay"}), Compatibility("full"))
+
+    first = runtime.status_text()
+    runtime.status_text()
+
+    assert "Enforcement mode: warn" in first
+    assert caplog.text.count("Invalid enforcement_mode") == 1
+
+
 def test_status_reports_degraded_hermes_compatibility():
     runtime = SkillRouterRuntime(Ctx(), Compatibility("degraded"))
 
@@ -176,6 +190,8 @@ def test_status_summarizes_skill_readiness():
     assert "Audit entries: 0" in status
     assert "Last audit: none" in status
     assert "Routing policy: enabled" in status
+    assert "Skill execution guard: available" in status
+    assert "Enforcement mode: warn" in status
 
 
 def test_audit_commands_render_summary_and_last_entry():
@@ -338,6 +354,7 @@ def test_explicit_broken_skill_produces_blocked_injection(monkeypatch):
     audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
     assert audit_entry["recommended"] == []
     assert audit_entry["policy_status"] == "blocked"
+    assert audit_entry["enforcement_status"] == "policy_blocked"
 
 
 def test_policy_exception_discards_unvalidated_selection(monkeypatch):
@@ -376,6 +393,48 @@ def test_policy_exception_discards_unvalidated_selection(monkeypatch):
     audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
     assert audit_entry["recommended"] == []
     assert audit_entry["policy_status"] == "degraded"
+
+
+def test_guard_initialization_failure_keeps_validated_plan_and_fails_open(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"enforcement_mode": "primary"}), Compatibility("full"))
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "abc",
+        "entries": [{
+            "name": "github",
+            "readiness_status": "ready",
+            "requirements": {"skills": []},
+            "alternatives": [],
+        }],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "github",
+            "role": "primary",
+            "reason": "GitHub task",
+            "order": 1,
+        }], "model"),
+    )
+    monkeypatch.setattr(
+        runtime.guard,
+        "start_turn",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("guard failed")),
+    )
+
+    injected = runtime.pre_llm_call(
+        user_message="Use github",
+        task_id="task-guard-error",
+        turn_id="turn-guard-error",
+        session_id="session-guard-error",
+    )
+
+    entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert "1. PRIMARY: github" in injected
+    assert entry["enforcement_mode"] == "primary"
+    assert entry["enforcement_status"] == "unavailable"
 
 
 def test_recommend_applies_dependency_policy_and_reports_changes(monkeypatch):
@@ -462,6 +521,99 @@ def test_audit_receives_final_policy_selection(monkeypatch):
         {"name": "github", "role": "supporting", "order": 1},
         {"name": "pr-review", "role": "primary", "order": 2},
     ]
+
+
+def test_primary_guard_uses_final_policy_order_and_updates_audit(monkeypatch):
+    runtime = SkillRouterRuntime(
+        Ctx({"enforcement_mode": "primary", "max_enforcement_blocks_per_turn": 2}),
+        Compatibility("full"),
+    )
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "abc",
+        "entries": [
+            {
+                "name": "pr-review",
+                "readiness_status": "ready",
+                "requirements": {"skills": ["github"]},
+                "alternatives": [],
+            },
+            {
+                "name": "github",
+                "readiness_status": "ready",
+                "requirements": {"skills": []},
+                "alternatives": [],
+            },
+        ],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "pr-review",
+            "role": "primary",
+            "reason": "Review pull requests",
+            "order": 1,
+        }], "model"),
+    )
+    ids = {"task_id": "task-guard", "turn_id": "turn-guard", "session_id": "session-guard"}
+
+    runtime.pre_llm_call(user_message="Review pull request", **ids)
+    blocked = runtime.on_pre_tool_call(
+        tool_name="terminal", args={}, tool_call_id="task-tool-1", api_request_id="request-1", **ids
+    )
+    assert runtime.on_pre_tool_call(
+        tool_name="skill_view", args={"name": "github"}, tool_call_id="load-1", **ids
+    ) is None
+    runtime.on_post_tool_call(
+        tool_name="skill_view", args={"name": "github"}, tool_call_id="load-1", status="ok", **ids
+    )
+    runtime.on_pre_tool_call(
+        tool_name="skill_view", args={"name": "pr-review"}, tool_call_id="load-2", **ids
+    )
+    runtime.on_post_tool_call(
+        tool_name="skill_view", args={"name": "pr-review"}, tool_call_id="load-2", status="ok", **ids
+    )
+    allowed = runtime.on_pre_tool_call(
+        tool_name="write_file", args={}, tool_call_id="task-tool-2", api_request_id="request-2", **ids
+    )
+    runtime.on_post_llm_call(**ids)
+
+    entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert blocked["action"] == "block"
+    assert "1. github\n2. pr-review" in blocked["message"]
+    assert allowed is None
+    assert entry["enforcement_mode"] == "primary"
+    assert entry["enforcement_status"] == "satisfied"
+    assert entry["block_count"] == 1
+    assert entry["primary_loaded_before_task_tools"] is True
+
+
+def test_enforcement_command_is_read_only_current_turn_diagnostic():
+    runtime = SkillRouterRuntime(Ctx({"enforcement_mode": "all"}), Compatibility("full"))
+
+    empty = runtime.command("enforcement")
+    runtime.guard.start_turn(
+        task_id="task",
+        turn_id="turn",
+        session_id="session",
+        policy_status="valid",
+        selections=[{"name": "github", "role": "primary", "readiness_status": "ready"}],
+        mode="all",
+        max_blocks=2,
+        available=True,
+    )
+    current = runtime.command("enforcement")
+
+    assert "Mode: all" in empty
+    assert "Capability: available" in empty
+    assert "Max blocks per turn: 2" in empty
+    assert "Current turn: none" in empty
+    assert "Status: pending" in current
+    assert "Required: github" in current
+    assert "Loaded: none" in current
+    assert "Blocks: 0" in current
 
 
 def test_refresh_requested_while_worker_runs_is_consumed(monkeypatch):
