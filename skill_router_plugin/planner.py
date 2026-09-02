@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
-from .catalog import base_plan_entry, compact_entry, rank_entries
+from .catalog import base_plan_entry, compact_entry, rank_entries, score_entry
+from .policy import detect_explicit_skill_names
+
+
+DEFAULT_DETERMINISTIC_MIN_SCORE = 20
+DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE = 24
+DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS = 1
+MAX_DETERMINISTIC_SUPPORTING_SCORE_GAP = 12
+MIN_STRONG_OPENVIKING_SCORE = 18.0
 
 _ANALYSIS_SCHEMA = {
     "type": "object",
@@ -154,9 +163,18 @@ def select_skills(
     limit: int,
     catalog_chars: int,
     timeout_seconds: int = 20,
+    deterministic_min_score: int = DEFAULT_DETERMINISTIC_MIN_SCORE,
+    deterministic_supporting_min_score: int = DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+    max_optional_supporting_skills: int = DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
 ) -> tuple[list[dict[str, Any]], str]:
     """Select ordered skills with model routing and deterministic fallback."""
     safe_limit = max(1, min(int(limit), 5))
+    safe_min_score = max(1, min(int(deterministic_min_score), 100))
+    safe_supporting_min_score = max(
+        safe_min_score,
+        min(int(deterministic_supporting_min_score), 100),
+    )
+    safe_optional_supporting = max(0, min(int(max_optional_supporting_skills), 4))
     if mode == "model" and entries:
         candidate_lines: list[str] = []
         used_chars = 0
@@ -226,9 +244,23 @@ def select_skills(
                 return selected, "model"
         except Exception:
             if mode == "model":
-                return _fallback(task, entries, safe_limit), "deterministic-fallback"
+                return _fallback(
+                    task,
+                    entries,
+                    safe_limit,
+                    min_score=safe_min_score,
+                    supporting_min_score=safe_supporting_min_score,
+                    max_optional_supporting=safe_optional_supporting,
+                ), "deterministic-fallback"
 
-    return _fallback(task, entries, safe_limit), "deterministic"
+    return _fallback(
+        task,
+        entries,
+        safe_limit,
+        min_score=safe_min_score,
+        supporting_min_score=safe_supporting_min_score,
+        max_optional_supporting=safe_optional_supporting,
+    ), "deterministic"
 
 
 def _safe_reason(value: Any) -> str:
@@ -247,18 +279,135 @@ def _bounded_strings(values: list[Any], *, limit: int = 12, chars: int = 300) ->
     return result
 
 
-def _fallback(task: str, entries: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+def deterministic_routing_diagnostics(
+    task: str,
+    entries: list[dict[str, Any]],
+    *,
+    min_score: int = DEFAULT_DETERMINISTIC_MIN_SCORE,
+    supporting_min_score: int = DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+) -> dict[str, Any]:
+    """Describe the strongest deterministic candidate without changing routing state."""
     ranked = rank_entries(task, entries)
-    positive = [(score, entry) for score, entry in ranked if score > 0]
-    selected = positive[:limit]
+    if not ranked:
+        return {
+            "top_candidate": None,
+            "required_score": min_score,
+            "supporting_required_score": supporting_min_score,
+            "strong_match": False,
+        }
+    _rank_score, entry = max(
+        ranked,
+        key=lambda item: score_entry(task, item[1])["relevance_score"],
+    )
+    breakdown = score_entry(task, entry)
+    relevance_score = breakdown["relevance_score"]
+    return {
+        "top_candidate": str(entry.get("name") or ""),
+        "score": relevance_score,
+        "breakdown": breakdown,
+        "required_score": min_score,
+        "supporting_required_score": supporting_min_score,
+        "strong_match": (
+            relevance_score >= min_score
+            or breakdown["openviking"] >= MIN_STRONG_OPENVIKING_SCORE
+        ),
+    }
+
+
+def _fallback(
+    task: str,
+    entries: list[dict[str, Any]],
+    limit: int,
+    *,
+    min_score: int,
+    supporting_min_score: int,
+    max_optional_supporting: int,
+) -> list[dict[str, Any]]:
+    ranked = rank_entries(task, entries)
+    scored = sorted(
+        (
+            (score_entry(task, entry)["relevance_score"], rank_index, entry)
+            for rank_index, (_rank_score, entry) in enumerate(ranked)
+        ),
+        key=lambda item: (-item[0], item[1]),
+    )
+    scored = [(score, entry) for score, _rank_index, entry in scored]
+    by_name = {str(entry.get("name") or ""): (score, entry) for score, entry in scored}
+    explicit_names = detect_explicit_skill_names(task, entries)
+    if explicit_names:
+        primary_score, primary = by_name[explicit_names[0]]
+    else:
+        strong = next(
+            (
+                (score, entry)
+                for score, entry in scored
+                if score >= min_score
+                or score_entry(task, entry)["openviking"] >= MIN_STRONG_OPENVIKING_SCORE
+            ),
+            None,
+        )
+        if strong is None:
+            return []
+        primary_score, primary = strong
+
+    selected: list[tuple[float, dict[str, Any]]] = [(primary_score, primary)]
+    included = {str(primary.get("name") or "")}
+    for name in explicit_names[1:]:
+        if len(selected) >= limit or name in included:
+            continue
+        selected.append(by_name[name])
+        included.add(name)
+
+    optional_limit = 0 if len(explicit_names) > 1 else max(
+        0,
+        min(int(max_optional_supporting), max(0, limit - len(selected))),
+    )
+    optional_count = 0
+    has_supporting_intent = _has_supporting_intent(task)
+    primary_name = str(primary.get("name") or "")
+    primary_relations = set(_string_list(primary.get("works_with")))
+    for score, entry in scored:
+        name = str(entry.get("name") or "")
+        if name in included or optional_count >= optional_limit or len(selected) >= limit:
+            continue
+        related = name in primary_relations or primary_name in set(_string_list(entry.get("works_with")))
+        candidate_breakdown = score_entry(task, entry)
+        strong_support = (
+            has_supporting_intent
+            and score >= supporting_min_score
+            and (
+                related
+                or (
+                    candidate_breakdown["name"] >= 16.0
+                    and primary_score - score <= MAX_DETERMINISTIC_SUPPORTING_SCORE_GAP
+                )
+            )
+        )
+        if not strong_support:
+            continue
+        selected.append((score, entry))
+        included.add(name)
+        optional_count += 1
+
     return [
         {
             "name": entry["name"],
             "role": "primary" if index == 0 else "supporting",
-            "reason": f"Routing-plan term match (score {score:.0f}).",
+            "reason": f"Strong deterministic routing match (score {score:.0f}).",
             "order": index + 1,
             "readiness_status": entry.get("readiness_status", "unknown"),
             "setup_needed": bool(entry.get("setup_needed")),
         }
         for index, (score, entry) in enumerate(selected)
     ]
+
+
+def _has_supporting_intent(task: str) -> bool:
+    words = set(re.findall(r"[^\W_]{2,}", str(task or "").casefold(), re.UNICODE))
+    return bool(words & {"alongside", "and", "mit", "plus", "sowie", "together", "und", "with", "zusammen"})
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]

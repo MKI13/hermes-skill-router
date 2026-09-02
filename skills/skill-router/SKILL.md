@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Routes every task to the best installed skills.
-version: 0.2.1
+version: 0.3.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -72,6 +72,8 @@ Routing modes are configured under `plugins.entries.skill-router.settings.routin
 - `deterministic`: use OpenViking scores plus local term matching without a model call.
 
 Both modes pass through the deterministic routing policy. The policy validates readiness, normalizes one primary role, expands declared skill dependencies before their dependent, resolves alternatives, enforces the skill limit, and discards unsafe or invalid selections. It does not semantically rerank the task.
+
+Deterministic routing abstains unless an implicit primary reaches `deterministic_min_score` (default `20`) or has strong OpenViking evidence. Exact installed-skill requests bypass that score threshold but not readiness or policy; negated or quoted names do not trigger the bypass. Normal deterministic output contains at most one optional supporting skill; declared dependencies remain separate. Model errors and timeouts use the same gate. A no-match `/skill-router recommend` result includes the top candidate score and required threshold.
 
 `learning_mode: shadow` derives bounded technical evidence from high- or medium-confidence quality history. The comparison never changes the real recommendation, policy, enforcement, OpenViking evidence, or skill metadata. Bias requires enough primary-role samples and remains within `-0.20` to `+0.20`; `active` mode is unsupported.
 

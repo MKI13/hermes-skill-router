@@ -345,3 +345,14 @@ def test_explicit_skill_detection_uses_standalone_installed_names():
     )
 
     assert detected == ["github", "code-review"]
+
+
+def test_explicit_skill_detection_ignores_negated_and_quoted_mentions():
+    catalog = [entry("humanizer"), entry("pdf"), entry("docx")]
+
+    detected = detect_explicit_skill_names(
+        "Do not use humanizer. Use pdf without docx. The log says `humanizer`.",
+        catalog,
+    )
+
+    assert detected == ["pdf"]

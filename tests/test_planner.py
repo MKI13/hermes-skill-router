@@ -208,13 +208,13 @@ def test_deterministic_router_returns_only_positive_matches():
     assert selected[0]["name"] == "github"
 
 
-def test_ready_skill_is_preferred_over_equally_relevant_unready_skill():
+def test_readiness_breaks_ties_but_does_not_create_optional_support():
     ctx = FakeCtx([])
     common = {
         "description": "Deploy the application workflow.",
-        "use_when": ["Deploy application"],
+        "use_when": ["Deploy application workflow"],
         "avoid_when": [],
-        "keywords": ["deploy", "application"],
+        "keywords": ["deploy", "application", "workflow"],
         "works_with": [],
         "setup_needed": False,
     }
@@ -225,14 +225,14 @@ def test_ready_skill_is_preferred_over_equally_relevant_unready_skill():
 
     selected, _method = select_skills(
         ctx,
-        "Deploy the application",
+        "Deploy the application workflow",
         entries,
         mode="deterministic",
         limit=2,
         catalog_chars=4000,
     )
 
-    assert [item["name"] for item in selected] == ["beta", "alpha"]
+    assert [item["name"] for item in selected] == ["beta"]
 
 
 def test_deterministic_router_uses_openviking_evidence():
@@ -259,3 +259,159 @@ def test_deterministic_router_uses_openviking_evidence():
     )
 
     assert selected[0]["name"] == "specialist"
+
+
+def test_ready_baseline_is_not_relevance():
+    entries = [{
+        "name": "unrelated-ready",
+        "description": "Different work.",
+        "use_when": [],
+        "avoid_when": [],
+        "keywords": [],
+        "works_with": [],
+        "readiness_status": "ready",
+        "setup_needed": False,
+    }]
+
+    selected, _method = select_skills(
+        FakeCtx([]),
+        "17 + 25",
+        entries,
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+    )
+
+    assert selected == []
+
+
+def test_deterministic_threshold_is_inclusive_and_configurable():
+    entry = {
+        "name": "specialist",
+        "description": "",
+        "use_when": [],
+        "avoid_when": [],
+        "keywords": ["alpha", "bravo", "charlie", "delta", "echo"],
+        "works_with": [],
+        "readiness_status": "unknown",
+        "setup_needed": False,
+    }
+
+    selected, _method = select_skills(
+        FakeCtx([]),
+        "alpha bravo charlie delta echo",
+        [entry],
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+        deterministic_min_score=20,
+    )
+    rejected, _method = select_skills(
+        FakeCtx([]),
+        "alpha bravo charlie delta",
+        [entry],
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+        deterministic_min_score=20,
+    )
+
+    assert [item["name"] for item in selected] == ["specialist"]
+    assert rejected == []
+
+
+def test_avoid_when_can_remove_a_borderline_match():
+    entry = {
+        "name": "specialist",
+        "description": "",
+        "use_when": [],
+        "avoid_when": ["alpha bravo"],
+        "keywords": ["alpha", "bravo", "charlie", "delta", "echo"],
+        "works_with": [],
+        "readiness_status": "unknown",
+        "setup_needed": False,
+    }
+
+    selected, _method = select_skills(
+        FakeCtx([]),
+        "alpha bravo charlie delta echo",
+        [entry],
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+    )
+
+    assert selected == []
+
+
+def test_model_error_uses_same_strict_deterministic_gate():
+    ctx = FakeCtx([])
+    ctx.llm.complete_structured = lambda **_kwargs: (_ for _ in ()).throw(TimeoutError())
+    entries = [{
+        "name": "unrelated-ready",
+        "description": "Different work.",
+        "use_when": [],
+        "avoid_when": [],
+        "keywords": [],
+        "works_with": [],
+        "readiness_status": "ready",
+        "setup_needed": False,
+    }]
+
+    selected, method = select_skills(
+        ctx,
+        "17 + 25",
+        entries,
+        mode="model",
+        limit=4,
+        catalog_chars=4000,
+    )
+
+    assert method == "deterministic-fallback"
+    assert selected == []
+
+
+def test_optional_support_requires_clear_multi_skill_evidence_and_is_capped():
+    entries = [
+        {
+            "name": name,
+            "description": "Alpha bravo workflow.",
+            "use_when": ["alpha bravo workflow"],
+            "avoid_when": [],
+            "keywords": ["alpha", "bravo", "workflow"],
+            "works_with": [other],
+            "readiness_status": "unknown",
+            "setup_needed": False,
+        }
+        for name, other in (("alpha-bravo", "charlie-delta"), ("charlie-delta", "alpha-bravo"))
+    ] + [{
+        "name": "echo-foxtrot",
+        "description": "Echo foxtrot workflow.",
+        "use_when": ["echo foxtrot workflow"],
+        "avoid_when": [],
+        "keywords": ["echo", "foxtrot", "workflow"],
+        "works_with": [],
+        "readiness_status": "unknown",
+        "setup_needed": False,
+    }]
+
+    single, _method = select_skills(
+        FakeCtx([]),
+        "alpha bravo workflow",
+        entries,
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+    )
+    combined, _method = select_skills(
+        FakeCtx([]),
+        "alpha bravo and charlie delta plus echo foxtrot workflow",
+        entries,
+        mode="deterministic",
+        limit=4,
+        catalog_chars=4000,
+    )
+
+    assert [item["name"] for item in single] == ["alpha-bravo"]
+    assert len(combined) == 2
+    assert [item["role"] for item in combined] == ["primary", "supporting"]

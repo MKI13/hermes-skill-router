@@ -23,7 +23,14 @@ from .learning import (
     learning_summary,
 )
 from .openviking import OpenVikingBridge
-from .planner import analyze_changed_skills, select_skills
+from .planner import (
+    DEFAULT_DETERMINISTIC_MIN_SCORE,
+    DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+    DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
+    analyze_changed_skills,
+    deterministic_routing_diagnostics,
+    select_skills,
+)
 from .policy import apply_routing_policy, detect_explicit_skill_names
 from .readiness import (
     BROKEN,
@@ -187,6 +194,24 @@ class SkillRouterRuntime:
                 limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
+                deterministic_min_score=self._int_setting(
+                    "deterministic_min_score",
+                    DEFAULT_DETERMINISTIC_MIN_SCORE,
+                    minimum=1,
+                    maximum=100,
+                ),
+                deterministic_supporting_min_score=self._int_setting(
+                    "deterministic_supporting_min_score",
+                    DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+                    minimum=1,
+                    maximum=100,
+                ),
+                max_optional_supporting_skills=self._int_setting(
+                    "max_optional_supporting_skills",
+                    DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
+                    minimum=0,
+                    maximum=4,
+                ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
             selected = policy["selections"]
@@ -237,10 +262,15 @@ class SkillRouterRuntime:
                     "Proceed normally or explain the unavailable skill if relevant.\n"
                     "[/Skill Router]"
                 )
+            no_selection = (
+                "No installed skill was a strong match."
+                if policy_status == "valid"
+                else "No installed skill passed routing policy."
+            )
             return (
                 f"[Skill Router method={method} policy={policy_status}]\n"
-                "No installed skill passed routing policy for this task. Proceed normally, "
-                "but inspect skills_list if the task has a specialized workflow.\n"
+                f"{no_selection} Proceed normally, but inspect skills_list if the task has "
+                "a specialized workflow.\n"
                 "[/Skill Router]"
             )
 
@@ -486,6 +516,24 @@ class SkillRouterRuntime:
                 limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
+                deterministic_min_score=self._int_setting(
+                    "deterministic_min_score",
+                    DEFAULT_DETERMINISTIC_MIN_SCORE,
+                    minimum=1,
+                    maximum=100,
+                ),
+                deterministic_supporting_min_score=self._int_setting(
+                    "deterministic_supporting_min_score",
+                    DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+                    minimum=1,
+                    maximum=100,
+                ),
+                max_optional_supporting_skills=self._int_setting(
+                    "max_optional_supporting_skills",
+                    DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
+                    minimum=0,
+                    maximum=4,
+                ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
             validated = policy["selections"]
@@ -503,7 +551,35 @@ class SkillRouterRuntime:
                     for item in validated
                 )
             else:
-                lines.append("No skill passed routing policy.")
+                lines.append(
+                    "No skill match."
+                    if policy.get("policy_status") == "valid"
+                    else "No skill passed routing policy."
+                )
+                if method in {"deterministic", "deterministic-fallback"}:
+                    diagnostics = deterministic_routing_diagnostics(
+                        task,
+                        entries,
+                        min_score=self._int_setting(
+                            "deterministic_min_score",
+                            DEFAULT_DETERMINISTIC_MIN_SCORE,
+                            minimum=1,
+                            maximum=100,
+                        ),
+                        supporting_min_score=self._int_setting(
+                            "deterministic_supporting_min_score",
+                            DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+                            minimum=1,
+                            maximum=100,
+                        ),
+                    )
+                    if diagnostics.get("top_candidate"):
+                        lines.extend([
+                            "",
+                            f"Top candidate: {diagnostics['top_candidate']}",
+                            f"Score: {diagnostics['score']:.1f}",
+                            f"Required score: {diagnostics['required_score']}",
+                        ])
             changes = policy.get("changes") if isinstance(policy.get("changes"), list) else []
             if changes:
                 lines.extend(["", "Policy changes:"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .catalog import is_negated_name, is_quoted_name
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -27,7 +28,7 @@ def detect_explicit_skill_names(
     matches: list[tuple[int, str]] = []
     for entry in catalog_entries:
         name = str(entry.get("name") or "").strip()
-        if not name:
+        if not name or is_negated_name(task, name) or is_quoted_name(task, name):
             continue
         needle = name.casefold()
         start = 0

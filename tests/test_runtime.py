@@ -583,6 +583,46 @@ def test_recommend_applies_dependency_policy_and_reports_changes(monkeypatch):
     assert "- Reordered dependency github before pr-review." in output
 
 
+def test_recommend_explains_no_strong_match(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"routing_mode": "deterministic"}))
+    runtime.ctx.state.set("router.snapshot", {
+        "entries": [{
+            "name": "github",
+            "description": "Manage GitHub work.",
+            "keywords": ["github"],
+            "use_when": [],
+            "avoid_when": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "requirements": {"skills": []},
+            "policy_metadata_complete": True,
+        }],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+
+    output = runtime.command("recommend explain a general concept")
+
+    assert "Method: deterministic\nPolicy: valid" in output
+    assert "No skill match." in output
+    assert "Top candidate: github" in output
+    assert "Score: 0.0" in output
+    assert "Required score: 20" in output
+
+
+def test_model_abstention_does_not_report_deterministic_threshold(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    runtime.ctx.state.set("router.snapshot", {"entries": []})
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime_module, "select_skills", lambda *args, **kwargs: ([], "model"))
+
+    output = runtime.command("recommend explain a general concept")
+
+    assert "Method: model\nPolicy: valid" in output
+    assert "No skill match." in output
+    assert "Required score:" not in output
+    assert "Top candidate:" not in output
+
+
 def test_audit_receives_final_policy_selection(monkeypatch):
     runtime = SkillRouterRuntime(Ctx())
     runtime.ctx.state.set("router.snapshot", {

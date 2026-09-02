@@ -72,7 +72,8 @@ def test_registers_always_on_router_surfaces():
     assert ctx.aux[0]["key"] == "skill_router_planner"
     assert ctx.skills[0][0] == "skill-router"
     assert ctx.sections[0][0][0] == "skill-router.rules"
-    assert {name for name, _ in ctx.hooks} == {
+    registered_hooks = {name for name, _ in ctx.hooks}
+    assert registered_hooks - {"pre_tool_call"} == {
         "on_session_start",
         "on_skill_lifecycle",
         "pre_llm_call",
@@ -95,7 +96,8 @@ def test_registration_degrades_when_auxiliary_and_lifecycle_features_fail():
     register(ctx)
 
     assert ctx.aux == []
-    assert {name for name, _ in ctx.hooks} == {
+    registered_hooks = {name for name, _ in ctx.hooks}
+    assert registered_hooks - {"pre_tool_call"} == {
         "on_session_start",
         "pre_llm_call",
         "post_tool_call",

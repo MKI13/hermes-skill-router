@@ -21,6 +21,10 @@ from .readiness import (
 
 _ROUTER_SKILLS = {"skill-router", "skill-router:skill-router"}
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
+_NEGATION_RE = re.compile(
+    r"\b(?:avoid|do\s+not|don't|dont|exclude|kein(?:e[nrms]?)?|nicht|not|ohne|skip|vermeide|without)\b",
+    re.IGNORECASE,
+)
 _READINESS_SCORE_ADJUSTMENT = {
     READY: 1.0,
     UNKNOWN: 0.0,
@@ -29,6 +33,13 @@ _READINESS_SCORE_ADJUSTMENT = {
     BROKEN: -3.0,
     DISABLED: -4.0,
 }
+_NAME_TERM_WEIGHT = 8.0
+_KEYWORD_TERM_WEIGHT = 4.0
+_DESCRIPTION_TERM_WEIGHT = 3.0
+_USE_WHEN_TERM_WEIGHT = 2.0
+_EXACT_NAME_WEIGHT = 12.0
+_OPENVIKING_WEIGHT = 20.0
+_AVOID_WHEN_PENALTY = 12.0
 _STOP_WORDS = {
     "about", "after", "also", "and", "are", "before", "das", "der", "die",
     "ein", "eine", "for", "from", "für", "ist", "mit", "oder", "the", "this",
@@ -165,32 +176,8 @@ def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def rank_entries(task: str, entries: Iterable[dict[str, Any]]) -> list[tuple[float, dict[str, Any]]]:
-    """Rank plan entries with a language-agnostic lexical fallback."""
-    task_terms = set(tokenize(task))
-    normalized_task = task.casefold()
-    ranked: list[tuple[float, dict[str, Any]]] = []
-    for entry in entries:
-        name = str(entry.get("name") or "")
-        description = str(entry.get("description") or "")
-        use_when = " ".join(_strings(entry.get("use_when")))
-        keywords = set(_strings(entry.get("keywords")))
-        score = 0.0
-        name_terms = set(tokenize(name.replace("-", " ")))
-        description_terms = set(tokenize(description))
-        use_terms = set(tokenize(use_when))
-        score += 8.0 * len(task_terms & name_terms)
-        score += 4.0 * len(task_terms & keywords)
-        score += 3.0 * len(task_terms & description_terms)
-        score += 2.0 * len(task_terms & use_terms)
-        try:
-            score += 20.0 * max(0.0, float(entry.get("openviking_score") or 0.0))
-        except (TypeError, ValueError):
-            pass
-        if name.casefold() in normalized_task:
-            score += 12.0
-        status = str(entry.get("readiness_status") or UNKNOWN)
-        score += _READINESS_SCORE_ADJUSTMENT.get(status, 0.0)
-        ranked.append((score, entry))
+    """Rank plan entries by lexical, retrieval, and readiness evidence."""
+    ranked = [(score_entry(task, entry)["score"], entry) for entry in entries]
     return sorted(
         ranked,
         key=lambda item: (
@@ -199,6 +186,106 @@ def rank_entries(task: str, entries: Iterable[dict[str, Any]]) -> list[tuple[flo
             str(item[1].get("name", "")).casefold(),
         ),
     )
+
+
+def score_entry(task: str, entry: dict[str, Any]) -> dict[str, float]:
+    """Return the deterministic score and its lexical, retrieval, and policy components."""
+    task_terms = set(tokenize(task))
+    name = str(entry.get("name") or "").strip()
+    name_terms = set(tokenize(name.replace("-", " ")))
+    keyword_terms = set(_strings(entry.get("keywords")))
+    description_terms = set(tokenize(str(entry.get("description") or "")))
+    use_when_terms = set(tokenize(" ".join(_strings(entry.get("use_when")))))
+    breakdown: dict[str, float] = {
+        "name": _NAME_TERM_WEIGHT * len(task_terms & name_terms),
+        "keywords": _KEYWORD_TERM_WEIGHT * len(task_terms & keyword_terms),
+        "description": _DESCRIPTION_TERM_WEIGHT * len(task_terms & description_terms),
+        "use_when": _USE_WHEN_TERM_WEIGHT * len(task_terms & use_when_terms),
+    }
+
+    try:
+        retrieval = max(0.0, min(1.0, float(entry.get("openviking_score") or 0.0)))
+    except (TypeError, ValueError):
+        retrieval = 0.0
+    breakdown["openviking"] = _OPENVIKING_WEIGHT * retrieval
+    negation_conflict = bool(name_terms & negated_terms(task)) or is_negated_name(task, name)
+    exact_name = _contains_name(task, name) and not negation_conflict and not is_quoted_name(task, name)
+    breakdown["exact_name"] = _EXACT_NAME_WEIGHT if exact_name else 0.0
+    breakdown["avoid_when"] = -_AVOID_WHEN_PENALTY if _matches_avoid_when(task_terms, entry) else 0.0
+    breakdown["negation"] = -100.0 if negation_conflict else 0.0
+    breakdown["relevance_score"] = sum(breakdown.values())
+    status = str(entry.get("readiness_status") or UNKNOWN)
+    breakdown["readiness"] = _READINESS_SCORE_ADJUSTMENT.get(status, 0.0)
+    breakdown["score"] = breakdown["relevance_score"] + breakdown["readiness"]
+    return breakdown
+
+
+def _contains_name(task: str, name: str) -> bool:
+    if not name:
+        return False
+    normalized = str(task or "").casefold()
+    needle = name.casefold()
+    start = 0
+    while True:
+        index = normalized.find(needle, start)
+        if index < 0:
+            return False
+        before = normalized[index - 1] if index else ""
+        end = index + len(needle)
+        after = normalized[end] if end < len(normalized) else ""
+        if not _name_character(before) and not _name_character(after):
+            return True
+        start = index + 1
+
+
+def is_negated_name(task: str, name: str) -> bool:
+    """Return whether a standalone skill name occurs in a local negated clause."""
+    if not name:
+        return False
+    normalized = str(task or "").casefold()
+    needle = name.casefold()
+    for negation in _NEGATION_RE.finditer(normalized):
+        clause = re.split(r"[.;!?]|\b(?:aber|but|however|sondern)\b", normalized[negation.end():], 1)[0]
+        index = clause.find(needle)
+        if 0 <= index <= 60:
+            before = clause[index - 1] if index else ""
+            end = index + len(needle)
+            after = clause[end] if end < len(clause) else ""
+            if not _name_character(before) and not _name_character(after):
+                return True
+    return False
+
+
+def negated_terms(task: str) -> set[str]:
+    """Return nearby terms governed by a simple English or German negation."""
+    normalized = str(task or "").casefold()
+    terms: set[str] = set()
+    for negation in _NEGATION_RE.finditer(normalized):
+        clause = re.split(r"[.;!?]|\b(?:aber|but|however|sondern)\b", normalized[negation.end():], 1)[0]
+        words = tokenize(clause)[:5]
+        terms.update(word for word in words if word not in {"bitte", "it", "please", "to", "verwenden"})
+    return terms
+
+
+def is_quoted_name(task: str, name: str) -> bool:
+    normalized = str(task or "").casefold()
+    needle = name.casefold()
+    for quote in ('"', "'", "`"):
+        if f"{quote}{needle}{quote}" in normalized:
+            return True
+    return False
+
+
+def _matches_avoid_when(task_terms: set[str], entry: dict[str, Any]) -> bool:
+    for phrase in _strings(entry.get("avoid_when")):
+        terms = set(tokenize(phrase))
+        if terms and terms <= task_terms:
+            return True
+    return False
+
+
+def _name_character(value: str) -> bool:
+    return bool(value) and (value.isalnum() or value in {"_", "-", ":"})
 
 
 def compact_entry(entry: dict[str, Any]) -> str:
@@ -215,8 +302,28 @@ def compact_entry(entry: dict[str, Any]) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    """Return normalized non-trivial terms."""
-    return [word for word in _WORD_RE.findall(str(text).casefold()) if word not in _STOP_WORDS]
+    """Return normalized non-trivial terms with a small deterministic alias set."""
+    words = [word for word in _WORD_RE.findall(str(text).casefold()) if word not in _STOP_WORDS]
+    normalized: list[str] = []
+    aliases = {
+        "debug": "debugging",
+        "debugged": "debugging",
+        "debugger": "debugging",
+        "failed": "failure",
+        "failing": "failure",
+        "prs": "pr",
+        "requests": "request",
+        "systematically": "systematic",
+        "tests": "test",
+    }
+    for word in words:
+        normalized.append(word)
+        alias = aliases.get(word)
+        if alias:
+            normalized.append(alias)
+    if "pull" in normalized and "request" in normalized:
+        normalized.append("pr")
+    return _dedupe(normalized)
 
 
 def _strings(value: Any) -> list[str]:

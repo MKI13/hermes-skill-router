@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.2.1
+version: 0.3.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -30,6 +30,18 @@ config_schema:
     type: int
     default: 4
     description: Maximum number of skills recommended for one task.
+  deterministic_min_score:
+    type: int
+    default: 20
+    description: Minimum deterministic score for selecting a primary skill.
+  deterministic_supporting_min_score:
+    type: int
+    default: 24
+    description: Minimum relevance score for an optional deterministic supporting skill.
+  max_optional_supporting_skills:
+    type: int
+    default: 1
+    description: Maximum optional supporting skills in deterministic routing; declared dependencies are not counted.
   max_audit_entries:
     type: int
     default: 100

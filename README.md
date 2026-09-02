@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.2.1`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.3.0`). Test it with your Hermes and OpenViking versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -22,7 +22,7 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 4. **Readiness:** declared command, Python-module, skill, and configuration requirements are checked passively during catalog refresh and cached with the plan. No setup action is executed.
 5. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
 6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
-7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
+7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic routing uses a strict no-skill gate, including after a model timeout or error.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
@@ -189,6 +189,8 @@ Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness 
 
 Declared `requirements.skills` are expanded transitively and loaded before their dependent while the dependent keeps its primary role. Final dependency selections carry bounded `required_by_dependency` and `required_for` metadata so execution quality can verify declared edges without semantic inference. Required dependencies displace optional supporting skills when the configured limit is reached. Missing or unusable dependencies block the affected primary, dependency cycles produce a degraded deterministic order and warning, and declared alternatives are resolved by explicit request, readiness, then original selection position. Policy statuses are `valid`, `adjusted`, `degraded`, and `blocked`.
 
+Deterministic routing requires a relevance score of at least `deterministic_min_score` (default `20`) for an implicit primary. This default separates the anonymized 76-skill production score aggregate's no-skill ceiling (`17`) from its intended-skill floor (`24`); the privacy-safe aggregate is committed in `tests/fixtures/production_score_calibration.json`. Readiness affects ordering and policy but cannot create relevance by itself. A boundary-matched explicit skill request bypasses the score threshold but remains subject to readiness and policy; locally negated or quoted names are not treated as explicit requests. At most `max_optional_supporting_skills` (default `1`) non-explicit supporting skill is retained; it needs a separate multi-skill intent, a score of at least `deterministic_supporting_min_score` (default `24`), and either a declared `works_with` relationship or two matching name terms within 12 points of the primary. Declared dependencies do not consume this optional-supporting allowance. `avoid_when` matches subtract 12 points. OpenViking evidence of at least `0.9` remains sufficient for a primary. `/skill-router recommend <task>` reports the top candidate, its relevance score, and the required score when no skill matches.
+
 ## Controlled skill execution
 
 `skill_router_plugin/enforcement.py` tracks only the final policy plan for the current Hermes turn. The default `warn` mode allows every tool but records a premature task-tool attempt. `primary` requires the dependency-ordered plan through the primary skill, while `all` requires every executable final selection in policy order. `off` disables checks without disabling audit. Only successful `skill_view` calls satisfy the guard; `skill_view`, `skills_list`, and additional non-required skill loads remain allowed.
@@ -233,6 +235,9 @@ plugins:
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
+        deterministic_min_score: 20
+        deterministic_supporting_min_score: 24
+        max_optional_supporting_skills: 1
         max_audit_entries: 100          # clamped to 10-1000
         learning_mode: shadow           # off | shadow; no active mode
         learning_min_samples: 5         # clamped to 3-100 and audit limit
@@ -285,6 +290,7 @@ Additional limitations:
 
 ```bash
 python -m pytest -q
+python scripts/benchmark-routing-quality.py
 python -m compileall -q .
 hermes plugins doctor . --ci
 ```

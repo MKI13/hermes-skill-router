@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "source": "Anonymized aggregate scores from the v0.2.1 production Canary evaluation.",
+  "catalog_size": 76,
+  "no_skill_scores": [17, 12, 12],
+  "intended_skill_scores": [24, 24, 29, 31, 36, 41, 41, 45, 46, 46, 48, 49, 53, 58, 58],
+  "selected_primary_threshold": 20,
+  "selected_supporting_threshold": 24,
+  "privacy": "Prompts, skill contents, profile names, machine paths, and production identifiers are omitted."
+}
