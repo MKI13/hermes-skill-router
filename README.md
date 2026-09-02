@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.2.0`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.2.1`). Test it with your Hermes and OpenViking versions before unattended use.
 
 ## Why this is a plugin plus a skill
 

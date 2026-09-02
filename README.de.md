@@ -4,7 +4,7 @@ Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https
 
 Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, liest deren `SKILL.md`, erzeugt mit einem konfigurierbaren Hermes-Hilfsmodell einen Einsatzplan, spiegelt Katalog und Plan nach OpenViking und empfiehlt vor jeder Benutzeraufgabe die passenden Skills in der richtigen Reihenfolge. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.2.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
+> Status: frühe Community-Version (`0.2.1`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 

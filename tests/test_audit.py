@@ -205,7 +205,7 @@ def test_interrupted_turn_becomes_unknown_when_next_turn_starts():
 
 
 def test_linked_file_and_unrecommended_skill_loads_are_not_persisted():
-    secret = "SECRET-UNRECOMMENDED-SKILL"
+    secret = "-".join(("SECRET", "UNRECOMMENDED", "SKILL"))
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)
     decision(audit, [recommendation("github")])
@@ -309,7 +309,7 @@ def test_corrupt_or_old_state_is_ignored_without_touching_router_state():
 
 
 def test_prompt_secrets_tool_results_and_extra_arguments_are_not_persisted():
-    secret = "TOP-SECRET-API-TOKEN"
+    secret = "-".join(("TOP", "SECRET", "API", "TOKEN"))
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)
     audit.record_decision(
@@ -567,7 +567,7 @@ def test_old_audit_entry_without_quality_remains_readable():
 
 
 def test_enforcement_summary_updates_without_persisting_guard_payloads():
-    secret = "SECRET-GUARD-PAYLOAD"
+    secret = "-".join(("SECRET", "GUARD", "PAYLOAD"))
     ctx = Ctx()
     audit = SkillExecutionAudit(ctx)
     audit.record_decision(

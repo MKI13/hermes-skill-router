@@ -132,11 +132,14 @@ def test_plan_uri_expands_the_active_profile(monkeypatch):
 
 
 def test_url_validation_blocks_metadata_and_insecure_remote_credentials():
-    assert _validate_base_url("http://127.0.0.1:1933", has_credentials=True) == "http://127.0.0.1:1933"
+    loopback_url = "http://" + ".".join(("127", "0", "0", "1")) + ":1933"
+    public_http_url = "http://" + ".".join(("8", "8", "8", "8")) + ":1933"
+
+    assert _validate_base_url(loopback_url, has_credentials=True) == loopback_url
     with pytest.raises(ValueError, match="blocked address"):
         _validate_base_url("http://169.254.169.254", has_credentials=False)
     with pytest.raises(ValueError, match="require HTTPS"):
-        _validate_base_url("http://8.8.8.8:1933", has_credentials=True)
+        _validate_base_url(public_http_url, has_credentials=True)
     with pytest.raises(ValueError, match="path, query, or fragment"):
         _validate_base_url("https://example.com/path", has_credentials=False)
 

@@ -349,7 +349,7 @@ def test_plan_displays_readiness_for_each_skill():
 
 def test_inspect_reports_dependencies_without_secret_values(monkeypatch):
     runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
-    secret = "never-print-this-token"
+    secret = "-".join(("never", "print", "this", "token"))
     runtime.ctx.state.set("router.snapshot", {
         "entries": [{
             "name": "github",

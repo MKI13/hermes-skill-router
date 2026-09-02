@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Routes every task to the best installed skills.
-version: 0.2.0
+version: 0.2.1
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
