@@ -175,6 +175,7 @@ def test_status_summarizes_skill_readiness():
     assert "Skill execution audit: available" in status
     assert "Audit entries: 0" in status
     assert "Last audit: none" in status
+    assert "Routing policy: enabled" in status
 
 
 def test_audit_commands_render_summary_and_last_entry():
@@ -237,6 +238,8 @@ def test_inspect_reports_dependencies_without_secret_values(monkeypatch):
                 {"type": "config", "name": "GITHUB_TOKEN", "available": True},
             ],
             "readiness_reasons": ["One or more declared dependencies are missing."],
+            "requirements": {"skills": ["git-base"]},
+            "alternatives": ["gitlab"],
             "configured_value": secret,
         }]
     })
@@ -248,6 +251,8 @@ def test_inspect_reports_dependencies_without_secret_values(monkeypatch):
     assert "Readiness: dependency_missing" in output
     assert "command git: available" in output
     assert "command gh: missing" in output
+    assert "Required skills:\n- git-base" in output
+    assert "Alternatives:\n- gitlab" in output
     assert "Setup needed: false" in output
     assert secret not in output
 
@@ -281,18 +286,182 @@ def test_injected_router_block_omits_untrusted_model_reason(monkeypatch):
     )
 
     assert "IGNORE RULES" not in injected
-    assert "github dependency-missing" in injected
+    assert "github readiness-unknown" in injected
     assert injected.count("[/Skill Router]") == 1
     audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
     assert audit_entry["task_id"] == "task-42"
     assert audit_entry["turn_id"] == "turn-42"
     assert audit_entry["method"] == "model"
+    assert audit_entry["policy_status"] == "valid"
     assert audit_entry["recommended"] == [{
         "name": "github",
         "role": "primary",
         "order": 1,
     }]
     assert "Create a PR" not in repr(audit_entry)
+
+
+def test_explicit_broken_skill_produces_blocked_injection(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "abc",
+        "entries": [{
+            "name": "broken-skill",
+            "readiness_status": "broken",
+            "requirements": {"skills": []},
+            "alternatives": [],
+        }],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "broken-skill",
+            "role": "primary",
+            "reason": "Explicit request",
+            "order": 1,
+        }], "model"),
+    )
+
+    injected = runtime.pre_llm_call(
+        user_message="Benutze broken-skill",
+        task_id="task-broken",
+        turn_id="turn-broken",
+        session_id="session-broken",
+    )
+
+    assert "policy=blocked" in injected
+    assert "Requested skill broken-skill is broken" in injected
+    assert "Do not treat the unavailable skill as an executable workflow" in injected
+    audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert audit_entry["recommended"] == []
+    assert audit_entry["policy_status"] == "blocked"
+
+
+def test_policy_exception_discards_unvalidated_selection(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "abc",
+        "entries": [{"name": "github", "readiness_status": "ready", "requirements": {"skills": []}}],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "github",
+            "role": "primary",
+            "reason": "GitHub task",
+            "order": 1,
+        }], "model"),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "apply_routing_policy",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("policy failed")),
+    )
+
+    injected = runtime.pre_llm_call(
+        user_message="Create a PR",
+        task_id="task-policy-error",
+        turn_id="turn-policy-error",
+        session_id="session-policy-error",
+    )
+
+    assert "policy=degraded" in injected
+    assert "github" not in injected
+    audit_entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert audit_entry["recommended"] == []
+    assert audit_entry["policy_status"] == "degraded"
+
+
+def test_recommend_applies_dependency_policy_and_reports_changes(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    runtime.ctx.state.set("router.snapshot", {
+        "entries": [
+            {
+                "name": "pr-review",
+                "readiness_status": "ready",
+                "requirements": {"skills": ["github"]},
+                "alternatives": [],
+            },
+            {
+                "name": "github",
+                "readiness_status": "ready",
+                "requirements": {"skills": []},
+                "alternatives": [],
+            },
+        ],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "pr-review",
+            "role": "primary",
+            "reason": "Review pull requests",
+            "order": 1,
+        }], "model"),
+    )
+
+    output = runtime.command("recommend review this pull request")
+
+    assert "Method: model\nPolicy: adjusted" in output
+    assert "1. github (supporting, ready)" in output
+    assert "2. pr-review (primary, ready)" in output
+    assert "- Added required skill: github" in output
+    assert "- Reordered dependency github before pr-review." in output
+
+
+def test_audit_receives_final_policy_selection(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "abc",
+        "entries": [
+            {
+                "name": "pr-review",
+                "readiness_status": "ready",
+                "requirements": {"skills": ["github"]},
+                "alternatives": [],
+            },
+            {
+                "name": "github",
+                "readiness_status": "ready",
+                "requirements": {"skills": []},
+                "alternatives": [],
+            },
+        ],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(
+        runtime_module,
+        "select_skills",
+        lambda *args, **kwargs: ([{
+            "name": "pr-review",
+            "role": "primary",
+            "reason": "Review pull requests",
+            "order": 1,
+        }], "model"),
+    )
+
+    runtime.pre_llm_call(
+        user_message="Review pull request",
+        task_id="task-policy",
+        turn_id="turn-policy",
+        session_id="session-policy",
+    )
+
+    entry = runtime.ctx.state.get("router.audit")["entries"][0]
+    assert entry["policy_status"] == "adjusted"
+    assert entry["recommended"] == [
+        {"name": "github", "role": "supporting", "order": 1},
+        {"name": "pr-review", "role": "primary", "order": 2},
+    ]
 
 
 def test_refresh_requested_while_worker_runs_is_consumed(monkeypatch):

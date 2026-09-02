@@ -156,6 +156,7 @@ def test_registered_hook_pipeline_audits_a_loaded_primary(monkeypatch):
     output = ctx.commands[0]["handler"]("audit last")
     persisted = repr(ctx.state.get("router.audit"))
 
+    assert "Policy: valid" in output
     assert "Result: complete" in output
     assert "Primary loaded: yes" in output
     assert "SECRET" not in persisted

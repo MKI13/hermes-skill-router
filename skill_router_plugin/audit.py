@@ -28,6 +28,7 @@ class SkillExecutionAudit:
         session_id: str,
         method: str,
         recommended: list[dict[str, Any]],
+        policy_status: str = "unknown",
         execution_observable: bool,
     ) -> None:
         """Append one bounded decision without retaining the full user prompt."""
@@ -41,6 +42,7 @@ class SkillExecutionAudit:
                 "timestamp": now,
                 "profile": str(getattr(self.ctx, "profile_name", "default"))[:100],
                 "method": str(method or "unknown")[:40],
+                "policy_status": _policy_status(policy_status),
                 "task_hash": hashlib.sha256(task.encode("utf-8", errors="replace")).hexdigest(),
                 "recommended": compact_recommendations,
                 "executions": [],
@@ -187,6 +189,7 @@ class SkillExecutionAudit:
         lines = [
             f"Task: {task_label}",
             f"Routing method: {entry.get('method', 'unknown')}",
+            f"Policy: {entry.get('policy_status', 'unknown')}",
             "",
             "Recommended:",
         ]
@@ -331,6 +334,7 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
         "timestamp": str(value.get("timestamp") or "")[:40],
         "profile": str(value.get("profile") or "default")[:100],
         "method": str(value.get("method") or "unknown")[:40],
+        "policy_status": _policy_status(value.get("policy_status")),
         "task_hash": str(value.get("task_hash") or "")[:64],
         "recommended": recommended,
         "executions": executions,
@@ -402,6 +406,11 @@ def _safe_name(value: Any) -> str:
 
 def _opaque_id(value: Any) -> str:
     return " ".join(str(value or "").split())[:200]
+
+
+def _policy_status(value: Any) -> str:
+    selected = str(value or "unknown")
+    return selected if selected in {"valid", "adjusted", "degraded", "blocked"} else "unknown"
 
 
 def _utc_now() -> str:

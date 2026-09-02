@@ -23,9 +23,10 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 5. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
 6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
 7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic matching is the fallback.
-8. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each selected skill before doing the task.
-9. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls with each routing decision. The audit is passive and never blocks, retries, or changes ranking.
-10. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
+9. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
+10. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls with the validated routing decision. The audit is passive and never blocks, retries, or changes ranking.
+11. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
 Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
 
@@ -163,9 +164,15 @@ Hermes' legacy `prerequisites.commands` and `prerequisites.env_vars` fields are 
 
 Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness is recalculated with catalog refreshes rather than on every turn.
 
+## Deterministic routing policy
+
+`skill_router_plugin/policy.py` validates model and deterministic selections without performing semantic reranking. It ignores unknown model fields, keeps at most one primary role, promotes the first valid supporting-only selection, removes automatic broken or disabled selections, and retains setup-required or dependency-missing skills only under the documented explicit/fallback rules. An explicitly requested broken or disabled skill produces `policy=blocked` and no executable recommendation; Hermes itself continues normally.
+
+Declared `requirements.skills` are expanded transitively and loaded before their dependent while the dependent keeps its primary role. Required dependencies displace optional supporting skills when the configured limit is reached. Missing or unusable dependencies block the affected primary, dependency cycles produce a degraded deterministic order and warning, and declared alternatives are resolved by explicit request, readiness, then original selection position. Policy statuses are `valid`, `adjusted`, `degraded`, and `blocked`.
+
 ## Routing execution audit
 
-Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, ordered recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
+Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, policy status, final validated recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
 
 `/skill-router audit` summarizes the latest 20 entries, `/skill-router audit last` shows the latest recommendation and load result, and `/skill-router audit N` summarizes the latest `N` entries. The history is profile-local and bounded. Only a SHA-256 task hash is retained; prompts, task previews, responses, skill contents, tool results, errors, files, and credentials are never stored.
 
@@ -201,7 +208,8 @@ plugins:
 ## Security and trust
 
 - The plugin never injects copied OpenViking `SKILL.md` content as executable instructions. OpenViking returns ranking evidence; Hermes loads winners through native `skill_view`.
-- Execution-audit observers discard prompt, response, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, statuses, and outcomes.
+- Execution-audit observers discard prompt, response, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, routing/policy statuses, and outcomes.
+- A policy failure discards the unvalidated selection and returns a degraded empty plan; it never falls back to raw model output.
 - Catalog documents are explicitly labeled untrusted data in auxiliary-model analysis prompts.
 - OpenViking mirror names include the Hermes profile and a stable digest. Mirrors removed from the effective Hermes catalog are deleted only when their names were previously recorded as router-owned.
 - The HTTP bridge rejects URL userinfo, paths, query strings, redirects, proxies, metadata/link-local targets, and oversized responses. Credentialed non-loopback endpoints require HTTPS.

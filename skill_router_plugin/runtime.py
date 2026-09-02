@@ -15,6 +15,7 @@ from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .openviking import OpenVikingBridge
 from .planner import analyze_changed_skills, select_skills
+from .policy import apply_routing_policy, detect_explicit_skill_names
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -136,15 +137,18 @@ class SkillRouterRuntime:
                 {**entry, "openviking_score": scores.get(str(entry.get("name")), 0.0)}
                 for entry in stored_entries
             ]
+            max_skills = self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5)
             selected, method = select_skills(
                 self.ctx,
                 task,
                 entries,
                 mode=self._routing_mode(),
-                limit=self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5),
+                limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
             )
+            policy = self._policy_result(task, selected, entries, max_skills)
+            selected = policy["selections"]
         except Exception as exc:
             logger.warning("Skill Router task routing failed: %s", exc, exc_info=True)
             return (
@@ -159,22 +163,40 @@ class SkillRouterRuntime:
             session_id=session_id,
             method=method,
             recommended=selected,
+            policy_status=str(policy.get("policy_status") or "degraded"),
             execution_observable=self.compatibility.capabilities.skill_execution_audit,
         )
 
+        policy_status = str(policy.get("policy_status") or "degraded")
         if not selected:
+            if policy_status == "blocked":
+                detail = _safe_policy_detail(policy)
+                return (
+                    f"[Skill Router method={method} policy=blocked]\n"
+                    f"{detail}\nDo not treat the unavailable skill as an executable workflow. "
+                    "Proceed normally or explain the unavailable skill if relevant.\n"
+                    "[/Skill Router]"
+                )
             return (
-                f"[Skill Router method={method}]\nNo installed skill was a strong match. "
-                "Proceed normally, but inspect skills_list if the task has a specialized "
-                "workflow.\n[/Skill Router]"
+                f"[Skill Router method={method} policy={policy_status}]\n"
+                "No installed skill passed routing policy for this task. Proceed normally, "
+                "but inspect skills_list if the task has a specialized workflow.\n"
+                "[/Skill Router]"
             )
 
-        lines = [f"[Skill Router method={method} catalog={str(snapshot.get('catalog_hash', ''))[:12]}]"]
+        lines = [
+            f"[Skill Router method={method} policy={policy_status} "
+            f"catalog={str(snapshot.get('catalog_hash', ''))[:12]}]"
+        ]
         for item in selected:
             readiness = _routing_readiness_suffix(item)
             lines.append(
                 f"{item['order']}. {item['role'].upper()}: {item['name']}{readiness}"
             )
+        if policy_status == "adjusted":
+            lines.append("Policy adjusted the model selection to satisfy deterministic routing rules.")
+        elif policy_status == "degraded":
+            lines.append("Policy retained a limited plan; review the readiness markers before relying on it.")
         lines.extend([
             "Before doing the task, call skill_view for every listed skill in this order. ",
             "Follow the primary workflow and merge only compatible supporting instructions.",
@@ -213,6 +235,7 @@ class SkillRouterRuntime:
                     "requirements": record.get("requirements", {}),
                     "dependency_checks": record.get("dependency_checks", []),
                     "readiness_reasons": record.get("readiness_reasons", []),
+                    "policy_metadata_complete": True,
                 })
             else:
                 entries.append(base_plan_entry(record))
@@ -353,22 +376,37 @@ class SkillRouterRuntime:
                 return "Usage: /skill-router recommend <task>"
             self.ensure_catalog(force=False)
             snapshot = self._snapshot()
+            entries = snapshot.get("entries", [])
+            max_skills = self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5)
             selected, method = select_skills(
                 self.ctx,
                 task,
-                snapshot.get("entries", []),
+                entries,
                 mode=self._routing_mode(),
-                limit=self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5),
+                limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
             )
-            if not selected:
-                return f"No skill match ({method})."
-            return f"Method: {method}\n" + "\n".join(
-                f"{item['order']}. {item['name']} ({item['role']}, "
-                f"{item.get('readiness_status', UNKNOWN)}): {item['reason']}"
-                for item in selected
-            )
+            policy = self._policy_result(task, selected, entries, max_skills)
+            validated = policy["selections"]
+            lines = [f"Method: {method}", f"Policy: {policy['policy_status']}", ""]
+            if validated:
+                lines.extend(
+                    f"{item['order']}. {item['name']} ({item['role']}, "
+                    f"{item.get('readiness_status', UNKNOWN)}): {item['reason']}"
+                    for item in validated
+                )
+            else:
+                lines.append("No skill passed routing policy.")
+            changes = policy.get("changes") if isinstance(policy.get("changes"), list) else []
+            if changes:
+                lines.extend(["", "Policy changes:"])
+                lines.extend(f"- {str(change)[:300]}" for change in changes[:10])
+            warnings = policy.get("warnings") if isinstance(policy.get("warnings"), list) else []
+            if warnings:
+                lines.extend(["", "Policy warnings:"])
+                lines.extend(f"- {str(warning)[:200]}" for warning in warnings[:10])
+            return "\n".join(lines)
         return (
             "Usage: /skill-router "
             "[status|refresh|plan|inspect <skill>|audit [last|N]|recommend <task>]"
@@ -410,6 +448,7 @@ class SkillRouterRuntime:
             f"Skill reader: {snapshot.get('reader_mode') or 'unknown'}",
             f"Deep analysis: {snapshot.get('deep_analyzed_at') or 'never'}",
             f"Routing mode: {self._routing_mode()}",
+            "Routing policy: enabled",
             f"Refresh running: {running}",
             f"Last changed/analyzed: {report.get('changed', 0)} / calls: {report.get('calls', 0)}",
             f"Last failures: {len(report.get('failures', [])) if isinstance(report.get('failures'), list) else 0}",
@@ -465,6 +504,15 @@ class SkillRouterRuntime:
                 lines.append(f"{kind} {name}: {availability}")
         else:
             lines.append("none declared")
+        requirements = entry.get("requirements") if isinstance(entry.get("requirements"), dict) else {}
+        required_skills = requirements.get("skills") if isinstance(requirements.get("skills"), list) else []
+        alternatives = entry.get("alternatives") if isinstance(entry.get("alternatives"), list) else []
+        if required_skills:
+            lines.extend(["", "Required skills:"])
+            lines.extend(f"- {str(name)[:200]}" for name in required_skills[:20])
+        if alternatives:
+            lines.extend(["", "Alternatives:"])
+            lines.extend(f"- {str(name)[:200]}" for name in alternatives[:20])
         lines.append("")
         lines.append(f"Setup needed: {'true' if entry.get('setup_needed') else 'false'}")
         reasons = entry.get("readiness_reasons")
@@ -521,6 +569,37 @@ class SkillRouterRuntime:
         with self._lock:
             self.ctx.state.set(_STATE_KEY, bounded)
 
+    def _policy_result(
+        self,
+        task: str,
+        selected: list[dict[str, Any]],
+        entries: list[dict[str, Any]],
+        max_skills: int,
+    ) -> dict[str, Any]:
+        """Apply policy fail-closed for recommendations and fail-open for Hermes."""
+        try:
+            explicit = detect_explicit_skill_names(task, entries)
+            result = apply_routing_policy(
+                task=task,
+                selected_skills=selected,
+                catalog_entries=entries,
+                max_skills=max_skills,
+                explicit_skill_names=explicit,
+            )
+            if not isinstance(result, dict) or not isinstance(result.get("selections"), list):
+                raise ValueError("invalid policy result")
+            if result.get("policy_status") not in {"valid", "adjusted", "degraded", "blocked"}:
+                raise ValueError("invalid policy status")
+            return result
+        except Exception:
+            logger.warning("Skill Router policy validation failed", exc_info=True)
+            return {
+                "selections": [],
+                "warnings": ["policy-error"],
+                "policy_status": "degraded",
+                "changes": ["Policy validation failed; no skill recommendation was retained."],
+            }
+
     def _routing_mode(self) -> str:
         mode = str(self.ctx.get_config("routing_mode", "model") or "model").casefold()
         return mode if mode in {"model", "deterministic"} else "model"
@@ -561,6 +640,7 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "requirements": entry.get("requirements", {}),
             "dependency_checks": entry.get("dependency_checks", []),
             "readiness_reasons": entry.get("readiness_reasons", []),
+            "policy_metadata_complete": entry.get("policy_metadata_complete", True),
             "openviking_name": entry.get("openviking_name", ""),
             "openviking_hash": entry.get("openviking_hash", ""),
         }
@@ -579,6 +659,9 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "openviking_hash": entry.get("openviking_hash", ""),
             "readiness_status": entry.get("readiness_status", UNKNOWN),
             "setup_needed": bool(entry.get("setup_needed")),
+            "requirements": entry.get("requirements", {}),
+            "alternatives": entry.get("alternatives", []),
+            "policy_metadata_complete": entry.get("policy_metadata_complete", True),
             "analysis": "deterministic",
         }
         for entry in compact["entries"]
@@ -592,6 +675,7 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "name": entry.get("name", ""),
             "content_hash": entry.get("content_hash", ""),
             "analysis": "deterministic",
+            "policy_metadata_complete": False,
         })
         if size(compact) > max_bytes:
             compact["entries"].pop()
@@ -632,6 +716,14 @@ def _plan_markdown(profile: str, entries: list[dict[str, Any]]) -> str:
             "",
         ])
     return "\n".join(lines)
+
+
+def _safe_policy_detail(policy: dict[str, Any]) -> str:
+    changes = policy.get("changes") if isinstance(policy.get("changes"), list) else []
+    if not changes:
+        return "Routing policy found no safe executable skill plan."
+    text = " ".join(str(changes[0]).split())[:300]
+    return text.replace("[", "(").replace("]", ")")
 
 
 def _routing_readiness_suffix(item: dict[str, Any]) -> str:

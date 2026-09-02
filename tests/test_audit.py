@@ -308,6 +308,7 @@ def test_last_output_reports_partial_primary_result():
 
     output = audit.last_text()
 
+    assert "Policy: unknown" in output
     assert "1. github [PRIMARY]" in output
     assert "2. code-review [SUPPORTING]" in output
     assert "github: yes" in output

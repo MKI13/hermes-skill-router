@@ -159,6 +159,7 @@ def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
         "requirements": record.get("requirements", {}),
         "dependency_checks": record.get("dependency_checks", []),
         "readiness_reasons": record.get("readiness_reasons", []),
+        "policy_metadata_complete": True,
         "analysis": "deterministic",
     }
 
