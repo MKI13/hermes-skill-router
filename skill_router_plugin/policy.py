@@ -264,6 +264,13 @@ def _apply_policy(
         ordered_names.extend(extra)
         included.update(extra)
 
+    dependency_parents: dict[str, list[str]] = {}
+    for parent in ordered_names:
+        for dependency in _required_skills(catalog[parent]):
+            if dependency not in included or dependency == primary["name"]:
+                continue
+            dependency_parents.setdefault(dependency, []).append(parent)
+    required_dependency_names = set(dependency_parents)
     candidate_by_name = {item["name"]: item for item in valid_candidates}
     output: list[dict[str, Any]] = []
     raw_positions = {item["name"]: item["position"] for item in valid_candidates}
@@ -275,14 +282,18 @@ def _apply_policy(
             selected["role"] = "supporting"
             changed = True
             _append(changes, f"Added required skill: {name}")
-        output.append({
+        output_item = {
             "name": name,
             "role": "primary" if name == primary["name"] else "supporting",
             "reason": selected["reason"],
             "order": len(output) + 1,
             "readiness_status": selected["readiness_status"],
             "setup_needed": selected["setup_needed"],
-        })
+            "required_by_dependency": name in required_dependency_names,
+        }
+        if name in required_dependency_names:
+            output_item["required_for"] = dependency_parents[name]
+        output.append(output_item)
 
     output_positions = {item["name"]: item["order"] for item in output}
     for parent in ordered_names:

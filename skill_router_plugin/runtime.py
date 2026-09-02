@@ -109,7 +109,8 @@ class SkillRouterRuntime:
         self.request_deep_refresh(f"lifecycle:{action}:{skill_name}")
 
     def on_pre_tool_call(self, **kwargs: Any) -> dict[str, str] | None:
-        """Apply the turn guard to sanitized pre-tool metadata."""
+        """Record skill invocation order, then apply the turn guard."""
+        self.audit.observe_tool_attempt(**kwargs)
         return self.guard.before_tool_call(**kwargs)
 
     def on_post_tool_call(self, **kwargs: Any) -> None:
@@ -385,6 +386,19 @@ class SkillRouterRuntime:
             return self.status_text()
         if action == "enforcement":
             return self.enforcement_text()
+        if action == "quality":
+            detail = args[1].casefold() if len(args) > 1 else ""
+            if detail == "last":
+                return self.audit.quality_last_text()
+            if not detail:
+                return self.audit.quality_summary_text(20)
+            try:
+                limit = int(detail)
+            except ValueError:
+                return "Usage: /skill-router quality [last|1-1000]"
+            if limit < 1 or limit > 1000:
+                return "Usage: /skill-router quality [last|1-1000]"
+            return self.audit.quality_summary_text(limit)
         if action == "audit":
             detail = args[1].casefold() if len(args) > 1 else ""
             if detail == "last":
@@ -452,7 +466,7 @@ class SkillRouterRuntime:
             return "\n".join(lines)
         return (
             "Usage: /skill-router "
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|enforcement|recommend <task>]"
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|enforcement|recommend <task>]"
         )
 
     def status_text(self) -> str:
@@ -471,6 +485,7 @@ class SkillRouterRuntime:
         _audit_availability, audit_entries, last_audit = self.audit.status_fields(
             available=self.compatibility.capabilities.skill_execution_audit
         )
+        quality_records, last_quality = self.audit.quality_status_fields()
         readiness_lines = [
             "Skill readiness:",
             *[
@@ -484,6 +499,9 @@ class SkillRouterRuntime:
             *self.compatibility.status_lines(),
             f"Audit entries: {audit_entries}",
             f"Last audit: {last_audit}",
+            "Quality evaluation: enabled",
+            f"Quality records: {quality_records}",
+            f"Last quality: {last_quality}",
             f"Indexed skills: {len(entries)}",
             *readiness_lines,
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",

@@ -27,7 +27,8 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
 11. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls and compact guard outcomes with the validated routing decision. The audit itself never blocks, retries, or changes ranking.
-12. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+12. **Quality evaluation:** each finalized audit receives a versioned deterministic score for technical routing and execution quality. Scores never feed back into selection, policy, OpenViking, or skill metadata.
+13. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
 Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
 
@@ -134,6 +135,8 @@ Inside a session:
 /skill-router inspect github
 /skill-router audit
 /skill-router audit last
+/skill-router quality
+/skill-router quality last
 /skill-router enforcement
 /skill-router recommend research current inference providers
 ```
@@ -147,6 +150,8 @@ hermes skill-router plan
 hermes skill-router inspect github
 hermes skill-router audit
 hermes skill-router audit last
+hermes skill-router quality
+hermes skill-router quality last
 hermes skill-router enforcement
 hermes skill-router recommend research current inference providers
 ```
@@ -171,7 +176,7 @@ Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness 
 
 `skill_router_plugin/policy.py` validates model and deterministic selections without performing semantic reranking. It ignores unknown model fields, keeps at most one primary role, promotes the first valid supporting-only selection, removes automatic broken or disabled selections, and retains setup-required or dependency-missing skills only under the documented explicit/fallback rules. An explicitly requested broken or disabled skill produces `policy=blocked` and no executable recommendation; Hermes itself continues normally.
 
-Declared `requirements.skills` are expanded transitively and loaded before their dependent while the dependent keeps its primary role. Required dependencies displace optional supporting skills when the configured limit is reached. Missing or unusable dependencies block the affected primary, dependency cycles produce a degraded deterministic order and warning, and declared alternatives are resolved by explicit request, readiness, then original selection position. Policy statuses are `valid`, `adjusted`, `degraded`, and `blocked`.
+Declared `requirements.skills` are expanded transitively and loaded before their dependent while the dependent keeps its primary role. Final dependency selections carry bounded `required_by_dependency` and `required_for` metadata so execution quality can verify declared edges without semantic inference. Required dependencies displace optional supporting skills when the configured limit is reached. Missing or unusable dependencies block the affected primary, dependency cycles produce a degraded deterministic order and warning, and declared alternatives are resolved by explicit request, readiness, then original selection position. Policy statuses are `valid`, `adjusted`, `degraded`, and `blocked`.
 
 ## Controlled skill execution
 
@@ -184,6 +189,14 @@ Hard modes use Hermes' public `pre_tool_call` block directive. Calls from one He
 Each routed turn records a task hash, opaque Hermes task/turn/session identifiers, routing method, policy status, final validated recommendation names and roles, successful or failed `skill_view` observations, result, and whether the primary skill loaded. It also stores enforcement mode/status, block count, and whether the primary loaded before the first allowed task tool. Results are `complete`, `partial`, `missed`, `not_applicable`, or `unknown`. A turn remains `unknown` when Hermes cannot expose both required observer hooks or when finalization is interrupted.
 
 `/skill-router audit` summarizes the latest 20 entries, `/skill-router audit last` shows the latest recommendation and load result, and `/skill-router audit N` summarizes the latest `N` entries. The history is profile-local and bounded. Only a SHA-256 task hash is retained; prompts, task previews, responses, skill contents, tool results, errors, files, and credentials are never stored.
+
+## Routing quality evaluation
+
+`skill_router_plugin/quality.py` assigns each finalized audit a deterministic `quality_version: 1` record with a score from 0.0 to 1.0, grade, confidence, technical signals, and explicit penalties. It evaluates whether the routing process completed cleanly: policy status, successful required loads, dependency order, guard behavior, load errors, and whether the primary loaded before task tools. It does not evaluate whether Hermes' final domain answer was correct.
+
+Scoring starts at 1.0 and applies centralized penalties. Adjusted or degraded policy, partial or missed audit results, missing primary/dependency/supporting loads, `skill_view` errors, warnings, blocks, exhaustion, late primary loading, and dependency-order violations reduce the score. A safely blocked policy is assessable safety behavior rather than an automatic failure. A no-recommendation `not_applicable` turn, unfinished audit, or unavailable observer is unassessable with unknown score, grade, and confidence.
+
+Grades are `excellent` at 0.90, `good` at 0.75, `acceptable` at 0.55, `poor` at 0.30, and `failed` below 0.30. Confidence is high when finalized observer data, complete Hermes identities, load results, task-tool timing, and dependency ordering are available; missing technical evidence lowers it to medium or low. Model and deterministic routing use identical rules. `/skill-router quality`, `/skill-router quality N`, and `/skill-router quality last` expose aggregate and latest technical results. Quality remains passive: it never changes ranking, policy, readiness, enforcement, OpenViking scores, or skill metadata.
 
 ## Configuration
 
@@ -221,6 +234,7 @@ plugins:
 - The plugin never injects copied OpenViking `SKILL.md` content as executable instructions. OpenViking returns ranking evidence; Hermes loads winners through native `skill_view`.
 - Execution observers discard prompt, response, task-tool arguments, tool-result, and error payloads at the compatibility boundary. The audit persists only identifiers, task hashes, skill names, roles, order, timestamps, routing/policy/enforcement statuses, bounded block counts, and outcomes.
 - A policy failure discards the unvalidated selection and returns a degraded empty plan; it never falls back to raw model output.
+- Quality evaluation reads only sanitized bounded audit metadata and makes no model call. It stores no per-skill success rate and has no path back into routing or ranking.
 - Catalog documents are explicitly labeled untrusted data in auxiliary-model analysis prompts.
 - OpenViking mirror names include the Hermes profile and a stable digest. Mirrors removed from the effective Hermes catalog are deleted only when their names were previously recorded as router-owned.
 - The HTTP bridge rejects URL userinfo, paths, query strings, redirects, proxies, metadata/link-local targets, and oversized responses. Credentialed non-loopback endpoints require HTTPS.

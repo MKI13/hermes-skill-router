@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from skill_router_plugin import audit as audit_module
 from skill_router_plugin.audit import SkillExecutionAudit
 
 
@@ -47,9 +48,17 @@ def load_entry(ctx, index=-1):
 
 
 def observe(audit, name, *, status="ok", task_id="task-1", turn_id="turn-1", **kwargs):
+    args = {"name": name, **kwargs.pop("args_extra", {})}
+    audit.observe_tool_attempt(
+        tool_name="skill_view",
+        args=args,
+        task_id=task_id,
+        turn_id=turn_id,
+        session_id="session-1",
+    )
     audit.observe_tool_call(
         tool_name="skill_view",
-        args={"name": name, **kwargs.pop("args_extra", {})},
+        args=args,
         task_id=task_id,
         turn_id=turn_id,
         session_id="session-1",
@@ -232,6 +241,10 @@ def test_failed_skill_view_is_not_counted_as_loaded():
         "name": "github",
         "timestamp": entry["executions"][0]["timestamp"],
         "success": False,
+        "sequence": 1,
+        "error_count": 1,
+        "pending": False,
+        "order_ambiguous": False,
     }]
 
 
@@ -265,6 +278,7 @@ def test_history_is_bounded_to_configured_limit():
     assert len(entries) == 10
     assert entries[0]["task_id"] == "task-2"
     assert entries[-1]["task_id"] == "task-11"
+    assert audit.quality_status_fields() == (10, "unknown")
 
 
 def test_profiles_keep_separate_audit_state():
@@ -320,6 +334,208 @@ def test_prompt_secrets_tool_results_and_extra_arguments_are_not_persisted():
     assert secret not in persisted
     assert "tool output" not in persisted
     assert "reason" not in persisted
+
+
+def test_finalized_audit_persists_versioned_quality_with_dependency_order():
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        policy_status="valid",
+        recommended=[
+            {
+                "name": "github",
+                "role": "supporting",
+                "required_by_dependency": True,
+                "required_for": ["pr-review"],
+            },
+            {"name": "pr-review", "role": "primary"},
+        ],
+        enforcement_mode="primary",
+        enforcement_status="pending",
+        execution_observable=True,
+    )
+    observe(audit, "github")
+    observe(audit, "pr-review")
+    audit.update_enforcement(
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        enforcement={
+            "mode": "primary",
+            "status": "satisfied",
+            "block_count": 0,
+            "primary_loaded_before_task_tools": True,
+        },
+    )
+
+    finalize(audit)
+
+    entry = load_entry(ctx)
+    assert entry["quality"]["quality_version"] == 1
+    assert entry["quality"]["score"] == 1.0
+    assert entry["quality"]["grade"] == "excellent"
+    assert entry["quality"]["confidence"] == "high"
+    assert entry["quality"]["signals"]["dependency_order_respected"] is True
+
+
+def test_dependency_quality_uses_invocation_order_not_completion_order():
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    recommended = [
+        {
+            "name": "dependency",
+            "role": "supporting",
+            "required_by_dependency": True,
+            "required_for": ["primary"],
+        },
+        {"name": "primary", "role": "primary"},
+    ]
+    audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        policy_status="valid",
+        recommended=recommended,
+        enforcement_mode="all",
+        enforcement_status="pending",
+        execution_observable=True,
+    )
+    for name in ("dependency", "primary"):
+        audit.observe_tool_attempt(
+            tool_name="skill_view",
+            args={"name": name},
+            task_id="task-1",
+            turn_id="turn-1",
+            session_id="session-1",
+        )
+    for name in ("primary", "dependency"):
+        audit.observe_tool_call(
+            tool_name="skill_view",
+            args={"name": name},
+            task_id="task-1",
+            turn_id="turn-1",
+            session_id="session-1",
+            status="ok",
+        )
+    audit.observe_tool_attempt(
+        tool_name="skill_view",
+        args={"name": "dependency"},
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+    )
+    audit.observe_tool_call(
+        tool_name="skill_view",
+        args={"name": "dependency"},
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        status="ok",
+    )
+    audit.update_enforcement(
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        enforcement={
+            "mode": "all",
+            "status": "satisfied",
+            "block_count": 0,
+            "primary_loaded_before_task_tools": True,
+        },
+    )
+
+    finalize(audit)
+
+    entry = load_entry(ctx)
+    assert entry["executions"][0]["sequence"] == 1
+    assert entry["executions"][1]["sequence"] == 2
+    assert entry["quality"]["signals"]["dependency_order_respected"] is True
+
+
+def test_skill_load_error_before_success_remains_a_quality_signal():
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="deterministic",
+        policy_status="valid",
+        recommended=[recommendation("github")],
+        enforcement_mode="primary",
+        enforcement_status="pending",
+        execution_observable=True,
+    )
+
+    observe(audit, "github", status="error")
+    observe(audit, "github", status="ok")
+    audit.update_enforcement(
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        enforcement={
+            "mode": "primary",
+            "status": "satisfied",
+            "block_count": 0,
+            "primary_loaded_before_task_tools": True,
+        },
+    )
+    finalize(audit)
+
+    entry = load_entry(ctx)
+    assert entry["result"] == "complete"
+    assert entry["executions"][0]["error_count"] == 1
+    assert entry["quality"]["signals"]["skill_load_errors"] == 1
+    assert entry["quality"]["score"] == 0.85
+
+
+def test_quality_failure_does_not_prevent_audit_finalization(monkeypatch):
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    audit.record_decision(
+        task="Review",
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        method="model",
+        policy_status="valid",
+        recommended=[recommendation("github")],
+        execution_observable=True,
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "safe_evaluate_quality",
+        lambda entry: (_ for _ in ()).throw(RuntimeError("quality failed")),
+    )
+
+    observe(audit, "github")
+    finalize(audit)
+
+    entry = load_entry(ctx)
+    assert entry["finalized"] is True
+    assert entry["result"] == "complete"
+    assert entry["quality"]["assessable"] is False
+    assert entry["quality"]["grade"] == "unknown"
+
+
+def test_old_audit_entry_without_quality_remains_readable():
+    ctx = Ctx()
+    audit = SkillExecutionAudit(ctx)
+    decision(audit, [])
+    state = ctx.state.get("router.audit")
+    state["entries"][0].pop("quality", None)
+    ctx.state.set("router.audit", state)
+
+    assert "Score: unknown" in audit.quality_last_text()
+    assert audit.quality_status_fields() == (0, "none")
 
 
 def test_enforcement_summary_updates_without_persisting_guard_payloads():

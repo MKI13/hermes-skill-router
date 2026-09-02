@@ -7,6 +7,14 @@ import hashlib
 import threading
 from typing import Any
 
+from .quality import (
+    normalize_quality,
+    quality_last,
+    quality_summary,
+    safe_evaluate_quality,
+    unknown_quality,
+)
+
 _AUDIT_STATE_KEY = "router.audit"
 _AUDIT_VERSION = 1
 _RESULTS = {"complete", "partial", "missed", "not_applicable", "unknown"}
@@ -56,20 +64,82 @@ class SkillExecutionAudit:
                 "task_hash": hashlib.sha256(task.encode("utf-8", errors="replace")).hexdigest(),
                 "recommended": compact_recommendations,
                 "executions": [],
+                "skill_attempt_count": 0,
                 "result": "unknown",
                 "primary_loaded": None,
+                "execution_observable": bool(execution_observable),
                 "finalized": False,
+                "quality": None,
             }
             if not compact_recommendations:
                 entry["result"] = "not_applicable"
                 entry["finalized"] = True
             elif not execution_observable:
                 entry["finalized"] = True
+            if entry["finalized"]:
+                entry["quality"] = _quality_record(entry)
             with self._lock:
                 state = self._load_state()
                 self._finalize_stale_entries(state["entries"], entry)
                 state["entries"].append(entry)
                 state["entries"] = state["entries"][-self._history_limit():]
+                self._save_state(state)
+        except Exception:
+            return
+
+    def observe_tool_attempt(
+        self,
+        *,
+        tool_name: str = "",
+        args: Any = None,
+        task_id: str = "",
+        turn_id: str = "",
+        session_id: str = "",
+        **kwargs: Any,
+    ) -> None:
+        """Record invocation order for one recommended root ``skill_view`` call."""
+        del kwargs
+        if tool_name != "skill_view" or not isinstance(args, dict):
+            return
+        if args.get("loads_primary_document") is False:
+            return
+        name = _skill_name(args)
+        if not name:
+            return
+        try:
+            with self._lock:
+                state = self._load_state()
+                entry = _find_open_entry(
+                    state["entries"], task_id=task_id, turn_id=turn_id, session_id=session_id
+                )
+                if entry is None or name not in {
+                    str(item.get("name") or "")
+                    for item in entry.get("recommended", [])
+                    if isinstance(item, dict)
+                }:
+                    return
+                executions = entry["executions"]
+                existing = next(
+                    (item for item in executions if item.get("name") == name),
+                    None,
+                )
+                sequence = _small_count(entry.get("skill_attempt_count")) + 1
+                entry["skill_attempt_count"] = min(sequence, 20)
+                if existing is None:
+                    executions.append({
+                        "name": name,
+                        "timestamp": "",
+                        "sequence": sequence,
+                        "success": None,
+                        "error_count": 0,
+                        "pending": True,
+                        "order_ambiguous": False,
+                    })
+                elif existing.get("success") is not True:
+                    if existing.get("pending"):
+                        existing["order_ambiguous"] = True
+                    existing["sequence"] = sequence
+                    existing["pending"] = True
                 self._save_state(state)
         except Exception:
             return
@@ -120,10 +190,22 @@ class SkillExecutionAudit:
                         "name": name,
                         "timestamp": _utc_now(),
                         "success": success,
+                        "error_count": 0 if success else 1,
+                        "pending": False,
+                        "order_ambiguous": True,
                     })
-                elif success and not existing.get("success"):
-                    existing["success"] = True
-                    existing["timestamp"] = _utc_now()
+                else:
+                    existing["pending"] = False
+                    if success:
+                        existing["success"] = True
+                        existing["timestamp"] = _utc_now()
+                    else:
+                        if existing.get("success") is not True:
+                            existing["success"] = False
+                        existing["error_count"] = min(
+                            int(existing.get("error_count") or 0) + 1,
+                            20,
+                        )
                 self._save_state(state)
         except Exception:
             return
@@ -177,6 +259,7 @@ class SkillExecutionAudit:
                     return
                 _assess(entry)
                 entry["finalized"] = True
+                entry["quality"] = _quality_record(entry)
                 self._save_state(state)
         except Exception:
             return
@@ -219,6 +302,38 @@ class SkillExecutionAudit:
             "Primary skill loaded:",
             f"{primary_loaded} / {len(assessable)} assessable tasks",
         ])
+
+    def quality_summary_text(self, limit: int = 20) -> str:
+        """Render aggregate routing-quality statistics from bounded audit state."""
+        return quality_summary(self._recent_entries(limit), limit)
+
+    def quality_last_text(self) -> str:
+        """Render the latest persisted routing-quality record."""
+        entries = self._recent_entries(1)
+        return quality_last(entries[-1] if entries else None)
+
+    def quality_status_fields(self) -> tuple[int, str]:
+        """Return persisted quality count and the latest concise grade."""
+        try:
+            with self._lock:
+                entries = self._load_state()["entries"]
+        except Exception:
+            entries = []
+        records = [
+            normalize_quality(entry.get("quality"))
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("quality") is not None
+        ]
+        current = [record for record in records if record is not None]
+        if not current:
+            return 0, "none"
+        latest = current[-1]
+        if latest.get("assessable") is not True:
+            return len(current), "unknown"
+        return (
+            len(current),
+            f"{latest.get('grade', 'unknown')} ({float(latest.get('score') or 0):.2f})",
+        )
 
     def last_text(self) -> str:
         """Render the latest decision and observed executions."""
@@ -335,6 +450,14 @@ class SkillExecutionAudit:
                 entry["result"] = "unknown"
                 entry["primary_loaded"] = None
                 entry["finalized"] = True
+                entry["quality"] = _quality_record(entry)
+
+
+def _quality_record(entry: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return safe_evaluate_quality(entry)
+    except Exception:
+        return unknown_quality(str(entry.get("method") or "unknown"))
 
 
 def _empty_state() -> dict[str, Any]:
@@ -351,11 +474,22 @@ def _recommendations(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not name or name in seen:
             continue
         seen.add(name)
-        output.append({
+        item = {
             "name": name,
             "role": "primary" if value.get("role") == "primary" else "supporting",
             "order": len(output) + 1,
-        })
+        }
+        if value.get("required_by_dependency") is True:
+            item["required_by_dependency"] = True
+            required_for = value.get("required_for")
+            if isinstance(required_for, list):
+                parents: list[str] = []
+                for parent in required_for[:5]:
+                    selected_parent = _safe_name(parent)
+                    if selected_parent and selected_parent not in parents:
+                        parents.append(selected_parent)
+                item["required_for"] = parents
+        output.append(item)
     return output
 
 
@@ -372,11 +506,19 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
             if not name or name in seen:
                 continue
             seen.add(name)
-            executions.append({
+            success = item.get("success")
+            execution = {
                 "name": name,
                 "timestamp": str(item.get("timestamp") or "")[:40],
-                "success": bool(item.get("success")),
-            })
+                "success": success if isinstance(success, bool) else None,
+                "error_count": _small_count(item.get("error_count")),
+                "pending": bool(item.get("pending")),
+                "order_ambiguous": bool(item.get("order_ambiguous")),
+            }
+            sequence = item.get("sequence")
+            if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence > 0:
+                execution["sequence"] = min(sequence, 100)
+            executions.append(execution)
     result = str(value.get("result") or "unknown")
     if result not in _RESULTS:
         result = "unknown"
@@ -400,9 +542,12 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
         "task_hash": str(value.get("task_hash") or "")[:64],
         "recommended": recommended,
         "executions": executions,
+        "skill_attempt_count": _small_count(value.get("skill_attempt_count")),
         "result": result,
         "primary_loaded": primary,
+        "execution_observable": bool(value.get("execution_observable")),
         "finalized": bool(value.get("finalized")),
+        "quality": normalize_quality(value.get("quality")),
     }
     return normalized
 
@@ -489,6 +634,12 @@ def _enforcement_status(value: Any) -> str:
         "error",
     }
     return selected if selected in allowed else "error"
+
+
+def _small_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(value, 20))
 
 
 def _block_count(value: Any) -> int:

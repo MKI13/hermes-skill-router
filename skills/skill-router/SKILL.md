@@ -57,6 +57,7 @@ The router itself runs automatically before ordinary user requests. A manual com
 | `/skill-router plan` | Show compact trigger rules and readiness for indexed skills. |
 | `/skill-router inspect <skill>` | Show cached dependency and setup evidence without secret values. |
 | `/skill-router audit [last\|N]` | Summarize recent routed turns or inspect the latest execution result. |
+| `/skill-router quality [last\|N]` | Show deterministic technical routing-quality signals. |
 | `/skill-router enforcement` | Show execution-guard capability and current-turn state. |
 | `/skill-router recommend <task>` | Test routing without performing the task. |
 
@@ -83,7 +84,7 @@ Both modes pass through the deterministic routing policy. The policy validates r
 
 - Do not invent a skill name. Only `skills_list` and the router plan define available skills.
 - Do not assume one profile's plan or audit history applies to another profile. Hermes profiles are intentionally isolated.
-- Audit outcomes are diagnostic only; they do not enforce `skill_view`, repeat turns, or change ranking.
+- Audit and quality outcomes are diagnostic only; they do not enforce `skill_view`, repeat turns, or change ranking. Quality measures technical routing execution, not the correctness of Hermes' final domain answer.
 - Never substitute raw auxiliary-model selections for a blocked or failed policy result. The policy is the authoritative recommendation plan.
 - `skill_view` remains allowed by every enforcement mode. If hard enforcement exhausts its bounded block budget or loses reliable turn identity, continue fail-open and diagnose the audit instead of retrying the turn.
 - Do not treat OpenViking's memory-provider LLM as Hermes' routing model automatically. The router uses its registered Hermes auxiliary task; point that task at the desired local model.

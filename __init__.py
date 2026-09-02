@@ -48,7 +48,7 @@ def register(ctx) -> None:
         handler=runtime.command,
         description="Inspect, audit, refresh, or test the profile skill routing plan.",
         args_hint=(
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|enforcement|recommend <task>]"
+            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|enforcement|recommend <task>]"
         ),
     )
 
@@ -62,6 +62,8 @@ def register(ctx) -> None:
         inspect.add_argument("skill_name")
         audit = commands.add_parser("audit", help="Show recent routing execution audits")
         audit.add_argument("selector", nargs="?", default="")
+        quality = commands.add_parser("quality", help="Show technical routing quality")
+        quality.add_argument("selector", nargs="?", default="")
         commands.add_parser("enforcement", help="Show current execution guard state")
         recommend = commands.add_parser("recommend", help="Select skills for a sample task")
         recommend.add_argument("task", nargs="+")
@@ -81,6 +83,10 @@ def register(ctx) -> None:
             selector = getattr(args, "selector", "")
             print(runtime.command("audit" + (" " + selector if selector else "")))
             return 0
+        if action == "quality":
+            selector = getattr(args, "selector", "")
+            print(runtime.command("quality" + (" " + selector if selector else "")))
+            return 0
         if action == "enforcement":
             print(runtime.command("enforcement"))
             return 0
@@ -93,7 +99,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|enforcement|recommend}")
+        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|quality|enforcement|recommend}")
         return 2
 
     ctx.register_cli_command(

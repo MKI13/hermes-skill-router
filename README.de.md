@@ -27,7 +27,8 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 9. Der finale Policy-Plan initialisiert einen turn-isolierten Execution Guard. Der Standardmodus warnt nur; optionale harte Modi verlangen über `pre_tool_call` erfolgreiche geordnete `skill_view`-Aufrufe vor Task-Tools.
 10. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
 11. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe und kompakte Guard-Ergebnisse der validierten Routing-Entscheidung zu. Der Audit selbst blockiert nichts, wiederholt nichts und verändert kein Ranking.
-12. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+12. Jeder finalisierte Audit erhält eine versionierte deterministische Bewertung der technischen Routing- und Ausführungsqualität. Scores fließen nie in Auswahl, Policy, OpenViking oder Skill-Metadaten zurück.
+13. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
 Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
 
@@ -101,6 +102,8 @@ In einer Session:
 /skill-router inspect github
 /skill-router audit
 /skill-router audit last
+/skill-router quality
+/skill-router quality last
 /skill-router enforcement
 /skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
@@ -114,6 +117,8 @@ hermes skill-router plan
 hermes skill-router inspect github
 hermes skill-router audit
 hermes skill-router audit last
+hermes skill-router quality
+hermes skill-router quality last
 hermes skill-router enforcement
 hermes skill-router recommend Erstelle und prüfe einen GitHub Pull Request
 ```
@@ -138,7 +143,7 @@ Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars`
 
 `skill_router_plugin/policy.py` validiert Modell- und deterministische Auswahlen, ohne semantisch neu zu ranken. Unbekannte Modellfelder werden ignoriert, höchstens eine Primary-Rolle bleibt erhalten und bei reinen Supporting-Auswahlen wird der erste gültige Skill Primary. Automatisch ausgewählte kaputte oder deaktivierte Skills werden entfernt. `setup_required` und `dependency_missing` bleiben nur nach den dokumentierten expliziten beziehungsweise Fallback-Regeln sichtbar. Ein explizit verlangter kaputter oder deaktivierter Skill ergibt `policy=blocked` ohne ausführbare Empfehlung; Hermes selbst arbeitet normal weiter.
 
-Deklarierte `requirements.skills` werden transitiv ergänzt und vor dem abhängigen Skill geladen, während dieser seine Primary-Rolle behält. Erforderliche Dependencies verdrängen optionale Supporting-Skills am Limit. Fehlende oder unbrauchbare Dependencies blockieren den betroffenen Primary. Zyklen ergeben eine degradierte deterministische Reihenfolge mit Warnung. Deklarierte Alternativen werden nach explizitem Wunsch, Readiness und ursprünglicher Auswahlposition aufgelöst. Policy-Statuswerte sind `valid`, `adjusted`, `degraded` und `blocked`.
+Deklarierte `requirements.skills` werden transitiv ergänzt und vor dem abhängigen Skill geladen, während dieser seine Primary-Rolle behält. Finale Dependency-Auswahlen tragen begrenzte Metadaten `required_by_dependency` und `required_for`, damit Quality deklarierte Kanten ohne semantische Interpretation prüfen kann. Erforderliche Dependencies verdrängen optionale Supporting-Skills am Limit. Fehlende oder unbrauchbare Dependencies blockieren den betroffenen Primary. Zyklen ergeben eine degradierte deterministische Reihenfolge mit Warnung. Deklarierte Alternativen werden nach explizitem Wunsch, Readiness und ursprünglicher Auswahlposition aufgelöst. Policy-Statuswerte sind `valid`, `adjusted`, `degraded` und `blocked`.
 
 ## Kontrollierte Skill-Ausführung
 
@@ -151,6 +156,14 @@ Die harten Modi verwenden die öffentliche `pre_tool_call`-Block-Direktive von H
 Für jeden gerouteten Turn speichert der Router Task-Hash, undurchsichtige Hermes-Task-/Turn-/Session-IDs, Routing-Methode, Policy-Status, finale validierte Skill-Namen und Rollen, erfolgreiche oder fehlgeschlagene `skill_view`-Beobachtungen, Ergebnis und den Ladezustand des Primary-Skills. Zusätzlich werden Enforcement-Modus und -Status, Block-Anzahl und der Primary-Ladezustand vor dem ersten erlaubten Task-Tool gespeichert. Mögliche Ergebnisse sind `complete`, `partial`, `missed`, `not_applicable` und `unknown`. Ohne beide benötigten Observer-Hooks oder bei abgebrochener Finalisierung bleibt die Bewertung `unknown`.
 
 `/skill-router audit` fasst die letzten 20 Einträge zusammen, `/skill-router audit last` zeigt die letzte Empfehlung mit Ladeergebnis und `/skill-router audit N` fasst die letzten `N` Einträge zusammen. Die Historie ist profilspezifisch und begrenzt. Nur ein SHA-256-Task-Hash bleibt erhalten; Prompts, Task-Previews, Antworten, Skill-Inhalte, Tool-Ergebnisse, Fehlermeldungen, Dateien und Zugangsdaten werden nicht gespeichert.
+
+## Routing-Qualitätsbewertung
+
+`skill_router_plugin/quality.py` ergänzt jeden finalisierten Audit um einen deterministischen Datensatz mit `quality_version: 1`, Score von 0,0 bis 1,0, Grade, Confidence, technischen Signalen und expliziten Penalties. Bewertet wird, ob der Routing-Prozess technisch sauber ablief: Policy-Status, erfolgreiche notwendige Loads, Dependency-Reihenfolge, Guard-Verhalten, Ladefehler und der Primary-Load vor Task-Tools. Nicht bewertet wird, ob die abschließende fachliche Antwort von Hermes richtig war.
+
+Das Scoring startet bei 1,0 und zieht zentral definierte Penalties ab. Angepasste oder degradierte Policy, partielle oder verfehlte Audits, fehlende Primary-/Dependency-/Supporting-Loads, `skill_view`-Fehler, Warnungen, Blocks, Exhaustion, verspäteter Primary-Load und verletzte Dependency-Reihenfolge reduzieren den Score. Eine sicher blockierende Policy gilt als bewertbares Safety-Verhalten und nicht automatisch als Fehler. Turns mit `not_applicable`, unfertige Audits oder fehlende Observer sind nicht bewertbar und erhalten unbekannten Score, Grade und Confidence.
+
+Grades sind `excellent` ab 0,90, `good` ab 0,75, `acceptable` ab 0,55, `poor` ab 0,30 und `failed` darunter. Confidence ist hoch, wenn finalisierte Observer-Daten, vollständige Hermes-IDs, Ladeergebnisse, Task-Tool-Zeitpunkt und Dependency-Reihenfolge vorliegen; fehlende technische Evidenz reduziert sie auf mittel oder niedrig. Modell- und deterministisches Routing verwenden dieselben Regeln. `/skill-router quality`, `/skill-router quality N` und `/skill-router quality last` zeigen aggregierte beziehungsweise letzte technische Ergebnisse. Quality bleibt passiv und verändert weder Ranking, Policy, Readiness, Enforcement, OpenViking-Scores noch Skill-Metadaten.
 
 ## Einstellungen
 
@@ -186,6 +199,7 @@ plugins:
 - OpenViking liefert nur Retrieval-Hinweise und Skill-Namen. Die dort gespeicherte Kopie wird nicht direkt als ausführbare Anweisung eingefügt.
 - Die Ausführungs-Observer verwerfen Prompt-, Antwort-, Task-Tool-Argument-, Tool-Ergebnis- und Fehlerdaten bereits an der Compatibility-Grenze. Persistiert werden nur Identifikatoren, Task-Hashes, Skill-Namen, Rollen, Reihenfolge, Zeitpunkte, Routing-/Policy-/Enforcement-Statuswerte, begrenzte Block-Zähler und Ergebnisse.
 - Bei einem Policy-Fehler wird die ungeprüfte Auswahl verworfen und ein leerer degradierter Plan geliefert; rohe Modellausgaben werden nie als Fallback injiziert.
+- Die Quality-Auswertung liest nur bereinigte begrenzte Audit-Metadaten und ruft kein Modell auf. Sie speichert keine Skill-Erfolgsraten und besitzt keinen Rückkanal zu Routing oder Ranking.
 - Entfernte Spiegel werden nur gelöscht, wenn ihr Name zuvor als Router-Eigentum im Profilzustand gespeichert wurde.
 - Die HTTP-Brücke blockiert URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, Metadaten-/Link-Local-Ziele und übergroße Antworten. Zugangsdaten außerhalb von Loopback erfordern HTTPS.
 - Das Hilfsmodell erhält Skill-Dokumente ausdrücklich als nicht vertrauenswürdige Analysedaten.

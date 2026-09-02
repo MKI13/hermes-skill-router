@@ -189,6 +189,9 @@ def test_status_summarizes_skill_readiness():
     assert "Skill execution audit: available" in status
     assert "Audit entries: 0" in status
     assert "Last audit: none" in status
+    assert "Quality evaluation: enabled" in status
+    assert "Quality records: 0" in status
+    assert "Last quality: none" in status
     assert "Routing policy: enabled" in status
     assert "Skill execution guard: available" in status
     assert "Enforcement mode: warn" in status
@@ -202,7 +205,10 @@ def test_audit_commands_render_summary_and_last_entry():
         turn_id="turn-1",
         session_id="session-1",
         method="model",
+        policy_status="valid",
         recommended=[{"name": "github", "role": "primary", "order": 1}],
+        enforcement_mode="primary",
+        enforcement_status="pending",
         execution_observable=True,
     )
     runtime.audit.observe_tool_call(
@@ -213,10 +219,24 @@ def test_audit_commands_render_summary_and_last_entry():
         session_id="session-1",
         status="ok",
     )
+    runtime.audit.update_enforcement(
+        task_id="task-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        enforcement={
+            "mode": "primary",
+            "status": "satisfied",
+            "block_count": 0,
+            "primary_loaded_before_task_tools": True,
+        },
+    )
     runtime.audit.finalize_turn(task_id="task-1", turn_id="turn-1", session_id="session-1")
 
     summary = runtime.command("audit 10")
     last = runtime.command("audit last")
+    quality_summary = runtime.command("quality 10")
+    quality_last = runtime.command("quality last")
+    status = runtime.status_text()
 
     assert "Last 1 routed tasks:" in summary
     assert "Complete: 1" in summary
@@ -224,6 +244,12 @@ def test_audit_commands_render_summary_and_last_entry():
     assert "1. github [PRIMARY]" in last
     assert "github: yes" in last
     assert "Result: complete" in last
+    assert "Average score: 1.00" in quality_summary
+    assert "Excellent: 1" in quality_summary
+    assert "Score: 1.00" in quality_last
+    assert "Confidence: high" in quality_last
+    assert "Quality records: 1" in status
+    assert "Last quality: excellent (1.00)" in status
 
 
 def test_plan_displays_readiness_for_each_skill():
@@ -518,7 +544,13 @@ def test_audit_receives_final_policy_selection(monkeypatch):
     entry = runtime.ctx.state.get("router.audit")["entries"][0]
     assert entry["policy_status"] == "adjusted"
     assert entry["recommended"] == [
-        {"name": "github", "role": "supporting", "order": 1},
+        {
+            "name": "github",
+            "role": "supporting",
+            "order": 1,
+            "required_by_dependency": True,
+            "required_for": ["pr-review"],
+        },
         {"name": "pr-review", "role": "primary", "order": 2},
     ]
 

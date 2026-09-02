@@ -204,6 +204,8 @@ def test_direct_dependency_is_added_before_primary():
 
     assert names(result) == ["github", "pr-review"]
     assert roles(result) == ["supporting", "primary"]
+    assert [item["required_by_dependency"] for item in result["selections"]] == [True, False]
+    assert result["selections"][0]["required_for"] == ["pr-review"]
     assert result["policy_status"] == "adjusted"
     assert "Added required skill: github" in result["changes"]
 
@@ -216,6 +218,9 @@ def test_transitive_dependencies_are_ordered_first():
 
     assert names(result) == ["c", "b", "a"]
     assert roles(result) == ["supporting", "supporting", "primary"]
+    assert [item["required_by_dependency"] for item in result["selections"]] == [True, True, False]
+    assert result["selections"][0]["required_for"] == ["b"]
+    assert result["selections"][1]["required_for"] == ["a"]
 
 
 def test_missing_dependency_blocks_unsafe_primary():
@@ -327,6 +332,7 @@ def test_unknown_model_fields_are_not_forwarded():
         "order",
         "readiness_status",
         "setup_needed",
+        "required_by_dependency",
     }
 
 
