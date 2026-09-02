@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import sys
 
 from __init__ import register
-from skill_router_plugin import runtime as runtime_module
 
 
 class State:
@@ -103,32 +103,30 @@ def test_registration_degrades_when_auxiliary_and_lifecycle_features_fail():
 
 def test_registered_hook_pipeline_audits_a_loaded_primary(monkeypatch):
     ctx = Ctx()
-    monkeypatch.setattr(runtime_module.OpenVikingBridge, "find_scores", lambda self, task, entries: {})
-    monkeypatch.setattr(runtime_module, "scan_catalog", lambda context, compatibility: {
+    register(ctx)
+    hooks = {name: callback for name, callback in ctx.hooks}
+    runtime = hooks["pre_llm_call"].__self__
+    owning_module = sys.modules[runtime.__class__.__module__]
+    ctx.state.set("router.snapshot", {
         "catalog_hash": "catalog",
-        "reader_mode": "metadata-only",
-        "skills": [{
+        "entries": [{
             "name": "github",
             "description": "Manage pull requests",
-            "category": "dev",
-            "content_hash": "content",
-            "readiness_hash": "readiness",
             "readiness_status": "unknown",
-            "setup_needed": False,
-            "requirements": {},
-            "dependency_checks": [],
-            "readiness_reasons": [],
+            "requirements": {"skills": []},
+            "alternatives": [],
+            "policy_metadata_complete": True,
         }],
     })
-    monkeypatch.setattr(runtime_module, "select_skills", lambda *args, **kwargs: ([{
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(runtime.openviking, "find_scores", lambda task, entries: {})
+    monkeypatch.setattr(owning_module, "select_skills", lambda *args, **kwargs: ([{
         "name": "github",
         "role": "primary",
         "order": 1,
         "reason": "GitHub task",
         "readiness_status": "unknown",
     }], "deterministic"))
-    register(ctx)
-    hooks = {name: callback for name, callback in ctx.hooks}
 
     hooks["pre_llm_call"](
         user_message="Review a pull request",
