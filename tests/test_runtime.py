@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 
 from skill_router_plugin import runtime as runtime_module
+from skill_router_plugin.embedding import EmbeddingError
 from skill_router_plugin.learning import empty_learning_state
 from skill_router_plugin.runtime import SkillRouterRuntime, _fit_snapshot
 
@@ -1414,3 +1415,116 @@ def test_events_command_status_and_unknown_dependency_rendering(monkeypatch):
     assert "Last skill change: github detected at " in status
     assert "Catalog pending refresh: yes" in status
     assert "mcp server github: unknown" in runtime.command("inspect github")
+
+
+def test_hybrid_runtime_uses_direct_embeddings_without_openviking_or_llm(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({
+        "routing_mode": "hybrid",
+        "embedding_ambiguity_margin": 0.02,
+        "embedding_min_score": 0.35,
+        "max_optional_supporting_skills": 2,
+    }), Compatibility("full"))
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "catalog-v1",
+        "entries": [
+            {
+                "name": name,
+                "description": f"{name} workflow",
+                "content_hash": f"{name}-hash",
+                "readiness_status": "ready",
+                "requirements": {"skills": []},
+                "alternatives": [],
+                "policy_metadata_complete": True,
+            }
+            for name in ("alpha", "beta")
+        ],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(
+        runtime.openviking,
+        "find_scores",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("OpenViking must not route hybrid mode")),
+    )
+    monkeypatch.setattr(runtime.embedding, "rank", lambda *_args, **_kwargs: {
+        "alpha": 0.80,
+        "beta": 0.781,
+    })
+
+    injected = runtime.pre_llm_call(
+        user_message="semantic request",
+        task_id="hybrid-task",
+        turn_id="hybrid-turn",
+        session_id="hybrid-session",
+    )
+
+    assert "method=embedding" in injected
+    assert "1. PRIMARY: alpha" in injected
+    assert "2. SUPPORTING: beta" in injected
+
+
+def test_hybrid_runtime_embedding_failure_uses_deterministic_fallback(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"routing_mode": "hybrid"}), Compatibility("full"))
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "catalog-v1",
+        "entries": [{
+            "name": "pr-manager",
+            "description": "Manage GitHub pull requests.",
+            "content_hash": "pr-hash",
+            "use_when": ["open pull request"],
+            "avoid_when": [],
+            "keywords": ["github", "pull", "request", "review"],
+            "works_with": [],
+            "readiness_status": "ready",
+            "requirements": {"skills": []},
+            "alternatives": [],
+            "policy_metadata_complete": True,
+        }],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    monkeypatch.setattr(
+        runtime.embedding,
+        "rank",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(EmbeddingError("offline")),
+    )
+
+    injected = runtime.pre_llm_call(
+        user_message="Open a GitHub pull request",
+        task_id="fallback-task",
+        turn_id="fallback-turn",
+        session_id="fallback-session",
+    )
+
+    assert "method=deterministic-fallback" in injected
+    assert "PRIMARY: pr-manager" in injected
+    assert "Routing failed for this turn" not in injected
+
+
+def test_hybrid_recommend_command_uses_embedding_router(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"routing_mode": "hybrid"}), Compatibility("full"))
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "catalog-v1",
+        "entries": [{
+            "name": "semantic-skill",
+            "description": "Special workflow",
+            "content_hash": "semantic-hash",
+            "readiness_status": "ready",
+            "requirements": {"skills": []},
+            "alternatives": [],
+            "policy_metadata_complete": True,
+        }],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+    calls = []
+    monkeypatch.setattr(
+        runtime.embedding,
+        "rank",
+        lambda task, entries, catalog_hash: calls.append((task, catalog_hash)) or {
+            "semantic-skill": 0.9,
+        },
+    )
+
+    output = runtime.command("recommend completely different words")
+
+    assert "Method: embedding" in output
+    assert "semantic-skill (primary, ready)" in output
+    assert calls == [("completely different words", "catalog-v1")]

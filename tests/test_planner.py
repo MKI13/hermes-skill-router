@@ -415,3 +415,106 @@ def test_optional_support_requires_clear_multi_skill_evidence_and_is_capped():
     assert [item["name"] for item in single] == ["alpha-bravo"]
     assert len(combined) == 2
     assert [item["role"] for item in combined] == ["primary", "supporting"]
+
+
+def test_hybrid_router_uses_semantic_top_two_only_when_margin_is_below_threshold():
+    entries = [
+        {
+            "name": name,
+            "description": f"{name} workflow",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        }
+        for name in ("alpha", "beta", "gamma")
+    ]
+    ctx = FakeCtx([])
+
+    ambiguous, method = select_skills(
+        ctx,
+        "semantic request",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"alpha": 0.80, "beta": 0.781, "gamma": 0.77},
+        embedding_ambiguity_margin=0.02,
+        embedding_min_score=0.35,
+        max_optional_supporting_skills=2,
+    )
+    clear, _ = select_skills(
+        ctx,
+        "semantic request",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"alpha": 0.80, "beta": 0.77, "gamma": 0.76},
+        embedding_ambiguity_margin=0.02,
+        embedding_min_score=0.35,
+        max_optional_supporting_skills=2,
+    )
+
+    assert method == "embedding"
+    assert [item["name"] for item in ambiguous] == ["alpha", "beta"]
+    assert [item["role"] for item in ambiguous] == ["primary", "supporting"]
+    assert [item["name"] for item in clear] == ["alpha"]
+    assert ctx.llm.calls == []
+
+
+def test_hybrid_router_gives_explicit_skill_deterministic_priority():
+    entries = [
+        {
+            "name": name,
+            "description": "Workflow",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        }
+        for name in ("explicit-skill", "semantic-winner")
+    ]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        "Bitte explicit-skill verwenden",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"explicit-skill": 0.2, "semantic-winner": 0.99},
+    )
+
+    assert method == "deterministic-explicit"
+    assert [item["name"] for item in selected] == ["explicit-skill"]
+
+
+def test_hybrid_router_fails_open_to_strict_deterministic_routing():
+    entries = [{
+        "name": "pr-manager",
+        "description": "Manage GitHub pull requests.",
+        "use_when": ["open pull request"],
+        "avoid_when": [],
+        "keywords": ["github", "pull", "request", "review"],
+        "works_with": [],
+        "readiness_status": "ready",
+        "setup_needed": False,
+    }]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        "Open a GitHub pull request",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores=None,
+    )
+
+    assert method == "deterministic-fallback"
+    assert [item["name"] for item in selected] == ["pr-manager"]

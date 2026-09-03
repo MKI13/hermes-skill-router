@@ -246,3 +246,44 @@ def test_disabled_openviking_fails_open_without_requests(monkeypatch):
         "owned_names": [],
     }
     assert bridge.write_plan("plan") is False
+
+
+def test_read_only_openviking_keeps_retrieval_and_blocks_automatic_writes(monkeypatch):
+    bridge = OpenVikingBridge(Ctx({
+        "openviking_enabled": True,
+        "openviking_read_enabled": True,
+        "openviking_auto_write_enabled": False,
+    }))
+    requests = []
+
+    def request(method, path, body=None, **kwargs):
+        requests.append((method, path, body))
+        return {
+            "skills": [
+                {"name": "hermes-research-github-123", "score": 0.91},
+            ]
+        }
+
+    monkeypatch.setattr(bridge, "_request", request)
+
+    assert bridge.find_scores("open a pull request", [{
+        "name": "github",
+        "openviking_name": "hermes-research-github-123",
+    }]) == {"github": 0.91}
+    assert requests == [("POST", "/api/v1/skills/find", {
+        "query": "open a pull request",
+        "limit": 12,
+        "score_threshold": 0.15,
+    })]
+
+    requests.clear()
+    previous_owned = {"hermes-canary-github-123"}
+    assert bridge.sync_skills([], [], previous_owned=previous_owned) == {
+        "enabled": True,
+        "synced": 0,
+        "deleted": 0,
+        "failed": [],
+        "owned_names": ["hermes-canary-github-123"],
+    }
+    assert bridge.write_plan("plan") is False
+    assert requests == []

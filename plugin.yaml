@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.5.0
+version: 0.6.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -17,7 +17,7 @@ config_schema:
   routing_mode:
     type: str
     default: deterministic
-    description: "Routing mode: model or deterministic."
+    description: "Routing mode: deterministic, hybrid/embedding, or model. Hybrid uses direct local embeddings with deterministic fail-open."
   deep_refresh_on_start:
     type: bool
     default: true
@@ -40,8 +40,40 @@ config_schema:
     description: Minimum relevance score for an optional deterministic supporting skill.
   max_optional_supporting_skills:
     type: int
-    default: 1
-    description: Maximum optional supporting skills in deterministic routing; declared dependencies are not counted.
+    default: 2
+    description: Maximum optional supporting skills; declared dependencies are not counted.
+  embedding_url:
+    type: str
+    default: "http://127.0.0.1:11436"
+    description: Loopback-only Ollama origin used by hybrid/embedding routing.
+  embedding_model:
+    type: str
+    default: "qwen3-embedding:0.6b"
+    description: Ollama embedding model; no generative model is called for hybrid routing.
+  embedding_dimensions:
+    type: int
+    default: 1024
+    description: Exact vector dimension required from the embedding response.
+  embedding_timeout_seconds:
+    type: float
+    default: 5.0
+    description: Per-request embedding timeout, clamped from 0.05 to 30 seconds.
+  embedding_keep_alive:
+    type: str
+    default: "5m"
+    description: Ollama keep_alive sent with embedding requests.
+  embedding_batch_size:
+    type: int
+    default: 32
+    description: Maximum catalog documents embedded per request, clamped from 1 to 128.
+  embedding_ambiguity_margin:
+    type: float
+    default: 0.02
+    description: Recommend semantic Top-2 when Top-1 minus Top-2 is below this margin.
+  embedding_min_score:
+    type: float
+    default: 0.35
+    description: Minimum cosine score required for an implicit semantic primary.
   max_audit_entries:
     type: int
     default: 100
@@ -85,7 +117,15 @@ config_schema:
   openviking_enabled:
     type: bool
     default: false
-    description: Sync skill mirrors and query OpenViking with fail-open fallback.
+    description: Enable the OpenViking bridge; read and automatic-write gates apply separately.
+  openviking_read_enabled:
+    type: bool
+    default: true
+    description: Query OpenViking for semantic skill-routing evidence.
+  openviking_auto_write_enabled:
+    type: bool
+    default: true
+    description: Automatically sync skill mirrors and write the generated routing plan.
   openviking_url:
     type: str
     default: ""

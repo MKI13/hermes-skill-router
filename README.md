@@ -1,10 +1,10 @@
 # Hermes Skill Router
 
-An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com/NousResearch/hermes-agent) with optional [OpenViking](https://github.com/volcengine/OpenViking) indexing and retrieval.
+An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com/NousResearch/hermes-agent) with deterministic routing, direct local Ollama embeddings, and optional [OpenViking](https://github.com/volcengine/OpenViking) indexing and retrieval.
 
-The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
+The plugin inventories the effective skills of each Hermes profile, preserves Hermes readiness and dependency policy, and recommends ordered skills before every user turn. Hybrid mode embeds only each skill's name and description through a loopback-only Ollama endpoint, caches catalog vectors per profile, and makes no generative LLM routing call. Hermes still loads selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.5.0`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.6.0`). Test it with your Hermes and Ollama versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -20,9 +20,9 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 2. **Initial plan:** the first new session scans the active profile, creates a deterministic base plan, and queues background reconciliation. Model metadata enrichment occurs only in model routing mode. `refresh` remains a diagnostic fallback rather than an installation step.
 3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering.
 4. **Readiness:** declared command, Python-module, skill, MCP-server, and configuration requirements are checked passively during catalog refresh and cached with the plan. No dependency, MCP connection, or setup action is executed.
-5. **Deep analysis:** only skills with new or changed analysis inputs are sent in bounded batches to the configured auxiliary model.
-6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written under `viking://~/resources/hermes-skill-router/{profile-scope}/plan.md` by default.
-7. **Every task:** when enabled, OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic routing uses a strict no-skill gate, including after a model timeout or error.
+5. **Deep analysis:** only `model` mode sends new or changed skill documents to the configured auxiliary model. Hybrid mode makes no generative routing or analysis call.
+6. **Hybrid embeddings:** a loopback-only, proxy-free, no-redirect Ollama adapter embeds only skill name plus description. Profile-local vectors are cached by profile scope, catalog hash, content hash, endpoint, model, and dimension.
+7. **Every task:** an explicitly requested installed skill takes deterministic priority. Otherwise hybrid mode ranks by cosine similarity, adds Top-2 only when the Top-1 minus Top-2 margin is below the configured `0.02`, and retains at most two optional skills. Endpoint, timeout, malformed-response, or cache failures fail open to the strict deterministic router. OpenViking and auxiliary-model modes remain separately available.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
@@ -121,6 +121,22 @@ hermes skill-router setup --target-profile <profile> --apply
 ```
 
 Current Hermes releases reserve `--profile` as a global selector wherever it appears. The Router alias therefore requires `hermes --profile <invoking-profile> skill-router setup --profile <target-profile> --apply`; prefer `--target-profile` to avoid ambiguity.
+
+## Configure hybrid routing
+
+Run a dedicated Ollama service bound on the host to a numeric loopback address, then set:
+
+```bash
+hermes config set plugins.entries.skill-router.settings.routing_mode hybrid
+hermes config set plugins.entries.skill-router.settings.embedding_url http://127.0.0.1:11436
+hermes config set plugins.entries.skill-router.settings.embedding_model qwen3-embedding:0.6b
+hermes config set plugins.entries.skill-router.settings.embedding_dimensions 1024
+hermes config set plugins.entries.skill-router.settings.embedding_keep_alive 5m
+hermes config set plugins.entries.skill-router.settings.embedding_ambiguity_margin 0.02
+hermes config set plugins.entries.skill-router.settings.max_optional_supporting_skills 2
+```
+
+Only numeric loopback HTTP origins are accepted. URL credentials, paths, query strings, fragments, redirects, environment proxies, oversized responses, wrong vector counts/dimensions, and non-finite vectors are rejected. Hybrid failures fall back to deterministic routing without blocking Hermes.
 
 ## Configure the planner model
 
@@ -285,13 +301,21 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: deterministic     # deterministic | model
+        routing_mode: deterministic     # deterministic | hybrid | embedding | model
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         deterministic_min_score: 20
         deterministic_supporting_min_score: 24
-        max_optional_supporting_skills: 1
+        max_optional_supporting_skills: 2
+        embedding_url: http://127.0.0.1:11436
+        embedding_model: qwen3-embedding:0.6b
+        embedding_dimensions: 1024
+        embedding_timeout_seconds: 5.0
+        embedding_keep_alive: 5m
+        embedding_batch_size: 32
+        embedding_ambiguity_margin: 0.02
+        embedding_min_score: 0.35
         max_audit_entries: 100          # clamped to 10-1000
         learning_mode: shadow           # off | shadow; no active mode
         learning_min_samples: 5         # clamped to 3-100 and audit limit

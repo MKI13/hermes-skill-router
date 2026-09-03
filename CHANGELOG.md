@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Added direct numeric-loopback-only Ollama embedding routing with proxy and redirect refusal, bounded responses, strict vector validation, and configurable five-minute keep-alive.
+- Added profile-scoped catalog vector caches keyed by profile scope, catalog/content identity, endpoint, model, and dimensions; only skill names and descriptions are embedded.
+- Added `hybrid`/`embedding` routing: explicit skill requests retain deterministic priority, semantic Top-2 is used only below the `0.02` ambiguity margin, and failures fall open to deterministic routing without a generative LLM call.
+- Preserved readiness, dependency expansion, policy validation, enforcement, audit, quality, shadow learning, and independent OpenViking read/write gates.
+- Added loopback/SSRF, redirect, response-size, timeout, malformed-vector, cache-isolation, concurrency, runtime, and real-service benchmark coverage.
+
 ## 0.5.0
 
 - Added automatic, coalesced catalog updates for Hermes skill lifecycle events with cache-settled and interval-gated fingerprint fallbacks.

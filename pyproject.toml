@@ -1,7 +1,7 @@
 [project]
 name = "hermes-skill-router"
-version = "0.5.0"
-description = "Profile-scoped skill planning for Hermes Agent and OpenViking."
+version = "0.6.0"
+description = "Profile-scoped deterministic, local-embedding, and optional OpenViking skill routing for Hermes Agent."
 requires-python = ">=3.11"
 license = { text = "MIT" }
 

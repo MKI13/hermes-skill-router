@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, Callable
 
@@ -166,6 +167,9 @@ def select_skills(
     deterministic_min_score: int = DEFAULT_DETERMINISTIC_MIN_SCORE,
     deterministic_supporting_min_score: int = DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
     max_optional_supporting_skills: int = DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
+    embedding_scores: dict[str, float] | None = None,
+    embedding_ambiguity_margin: float = 0.02,
+    embedding_min_score: float = 0.35,
 ) -> tuple[list[dict[str, Any]], str]:
     """Select ordered skills with model routing and deterministic fallback."""
     safe_limit = max(1, min(int(limit), 5))
@@ -175,6 +179,34 @@ def select_skills(
         min(int(deterministic_supporting_min_score), 100),
     )
     safe_optional_supporting = max(0, min(int(max_optional_supporting_skills), 4))
+    if mode in {"hybrid", "embedding"}:
+        explicit_names = detect_explicit_skill_names(task, entries)
+        if explicit_names:
+            return _fallback(
+                task,
+                entries,
+                safe_limit,
+                min_score=safe_min_score,
+                supporting_min_score=safe_supporting_min_score,
+                max_optional_supporting=safe_optional_supporting,
+            ), "deterministic-explicit"
+        if embedding_scores is not None:
+            return _embedding_selection(
+                entries,
+                embedding_scores,
+                safe_limit,
+                ambiguity_margin=embedding_ambiguity_margin,
+                min_score=embedding_min_score,
+                max_optional_supporting=safe_optional_supporting,
+            ), "embedding"
+        return _fallback(
+            task,
+            entries,
+            safe_limit,
+            min_score=safe_min_score,
+            supporting_min_score=safe_supporting_min_score,
+            max_optional_supporting=safe_optional_supporting,
+        ), "deterministic-fallback"
     if mode == "model" and entries:
         candidate_lines: list[str] = []
         used_chars = 0
@@ -312,6 +344,67 @@ def deterministic_routing_diagnostics(
             or breakdown["openviking"] >= MIN_STRONG_OPENVIKING_SCORE
         ),
     }
+
+
+def _embedding_selection(
+    entries: list[dict[str, Any]],
+    scores: dict[str, float],
+    limit: int,
+    *,
+    ambiguity_margin: float,
+    min_score: float,
+    max_optional_supporting: int,
+) -> list[dict[str, Any]]:
+    """Select semantic Top-1 plus an optional ambiguous Top-2."""
+    known = {
+        str(entry.get("name") or ""): entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    ranked: list[tuple[float, str, dict[str, Any]]] = []
+    for name, entry in known.items():
+        try:
+            score = float(scores.get(name, -1.0))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(score):
+            ranked.append((max(-1.0, min(1.0, score)), name, entry))
+    ranked.sort(key=lambda item: (-item[0], item[1].casefold()))
+    if not ranked:
+        return []
+    try:
+        threshold = max(-1.0, min(1.0, float(min_score)))
+    except (TypeError, ValueError):
+        threshold = 0.35
+    try:
+        margin = max(0.0, min(1.0, float(ambiguity_margin)))
+    except (TypeError, ValueError):
+        margin = 0.02
+    if not math.isfinite(threshold):
+        threshold = 0.35
+    if not math.isfinite(margin):
+        margin = 0.02
+    if ranked[0][0] < threshold:
+        return []
+    selected = [ranked[0]]
+    if (
+        len(ranked) > 1
+        and limit > 1
+        and max(0, min(int(max_optional_supporting), 2)) >= 1
+        and ranked[0][0] - ranked[1][0] < margin
+    ):
+        selected.append(ranked[1])
+    return [
+        {
+            "name": name,
+            "role": "primary" if index == 0 else "supporting",
+            "reason": f"Semantic embedding match (cosine {score:.4f}).",
+            "order": index + 1,
+            "readiness_status": entry.get("readiness_status", "unknown"),
+            "setup_needed": bool(entry.get("setup_needed")),
+        }
+        for index, (score, name, entry) in enumerate(selected[:limit])
+    ]
 
 
 def _fallback(

@@ -6,6 +6,7 @@ from contextvars import copy_context
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import shlex
 import threading
 import time
@@ -15,6 +16,7 @@ from .audit import SkillExecutionAudit
 from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .enforcement import SkillExecutionGuard
+from .embedding import EmbeddingCatalogRouter
 from .events import SkillRouterEvents
 from .learning import (
     ShadowLearning,
@@ -71,6 +73,7 @@ class SkillRouterRuntime:
         self.compatibility = compatibility or HermesCompatibility(ctx)
         self.profile = resolve_profile_identity(ctx, self.compatibility)
         self.openviking = OpenVikingBridge(ctx, self.profile)
+        self.embedding = EmbeddingCatalogRouter(ctx, self.profile)
         self.audit = SkillExecutionAudit(ctx, self.profile)
         self.events = SkillRouterEvents(ctx, self.profile)
         self.learning = ShadowLearning(ctx, self.profile)
@@ -195,17 +198,34 @@ class SkillRouterRuntime:
             snapshot = self._snapshot()
             stored_entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
             learning_state = self._rebuild_learning()
-            scores = self.openviking.find_scores(task, stored_entries)
-            entries = [
-                {**entry, "openviking_score": scores.get(str(entry.get("name")), 0.0)}
-                for entry in stored_entries
-            ]
+            routing_mode = self._routing_mode()
+            embedding_scores: dict[str, float] | None = None
+            if routing_mode in {"hybrid", "embedding"}:
+                if not detect_explicit_skill_names(task, stored_entries):
+                    try:
+                        embedding_scores = self.embedding.rank(
+                            task,
+                            stored_entries,
+                            catalog_hash=str(snapshot.get("catalog_hash") or ""),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Skill Router embedding unavailable; using deterministic fallback: %s",
+                            type(exc).__name__,
+                        )
+                entries = list(stored_entries)
+            else:
+                scores = self.openviking.find_scores(task, stored_entries)
+                entries = [
+                    {**entry, "openviking_score": scores.get(str(entry.get("name")), 0.0)}
+                    for entry in stored_entries
+                ]
             max_skills = self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5)
             selected, method = select_skills(
                 self.ctx,
                 task,
                 entries,
-                mode=self._routing_mode(),
+                mode=routing_mode,
                 limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
@@ -225,7 +245,14 @@ class SkillRouterRuntime:
                     "max_optional_supporting_skills",
                     DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
                     minimum=0,
-                    maximum=4,
+                    maximum=2,
+                ),
+                embedding_scores=embedding_scores,
+                embedding_ambiguity_margin=self._float_setting(
+                    "embedding_ambiguity_margin", 0.02, minimum=0.0, maximum=1.0
+                ),
+                embedding_min_score=self._float_setting(
+                    "embedding_min_score", 0.35, minimum=-1.0, maximum=1.0
                 ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
@@ -470,7 +497,7 @@ class SkillRouterRuntime:
             }
         _catalog_changed, catalog, snapshot, generation = refreshed
         entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
-        if self._routing_mode() == "deterministic":
+        if self._routing_mode() != "model":
             analyzed = entries
             report = {"changed": 0, "calls": 0, "failures": []}
         else:
@@ -651,12 +678,28 @@ class SkillRouterRuntime:
             self.ensure_catalog(force=False)
             snapshot = self._snapshot()
             entries = snapshot.get("entries", [])
+            if not isinstance(entries, list):
+                entries = []
+            routing_mode = self._routing_mode()
+            embedding_scores: dict[str, float] | None = None
+            if routing_mode in {"hybrid", "embedding"} and not detect_explicit_skill_names(task, entries):
+                try:
+                    embedding_scores = self.embedding.rank(
+                        task,
+                        entries,
+                        catalog_hash=str(snapshot.get("catalog_hash") or ""),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Skill Router embedding unavailable; using deterministic fallback: %s",
+                        type(exc).__name__,
+                    )
             max_skills = self._int_setting("max_skills_per_task", 4, minimum=1, maximum=5)
             selected, method = select_skills(
                 self.ctx,
                 task,
                 entries,
-                mode=self._routing_mode(),
+                mode=routing_mode,
                 limit=max_skills,
                 catalog_chars=self._int_setting("routing_catalog_chars", 60000, minimum=4000, maximum=250000),
                 timeout_seconds=self._int_setting("routing_model_timeout_seconds", 20, minimum=1, maximum=25),
@@ -676,7 +719,14 @@ class SkillRouterRuntime:
                     "max_optional_supporting_skills",
                     DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
                     minimum=0,
-                    maximum=4,
+                    maximum=2,
+                ),
+                embedding_scores=embedding_scores,
+                embedding_ambiguity_margin=self._float_setting(
+                    "embedding_ambiguity_margin", 0.02, minimum=0.0, maximum=1.0
+                ),
+                embedding_min_score=self._float_setting(
+                    "embedding_min_score", 0.35, minimum=-1.0, maximum=1.0
                 ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
@@ -1175,7 +1225,7 @@ class SkillRouterRuntime:
         mode = str(
             self.ctx.get_config("routing_mode", "deterministic") or "deterministic"
         ).casefold()
-        return mode if mode in {"model", "deterministic"} else "deterministic"
+        return mode if mode in {"model", "deterministic", "hybrid", "embedding"} else "deterministic"
 
     def _bool_setting(self, key: str, default: bool) -> bool:
         value = self.ctx.get_config(key, default)
@@ -1186,6 +1236,25 @@ class SkillRouterRuntime:
         if isinstance(value, bool) or not isinstance(value, int):
             value = default
         return max(minimum, min(maximum, value))
+
+    def _float_setting(
+        self,
+        key: str,
+        default: float,
+        *,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        value = self.ctx.get_config(key, default)
+        if isinstance(value, bool):
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        if not math.isfinite(parsed):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
 
 
 def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:

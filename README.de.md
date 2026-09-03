@@ -1,10 +1,10 @@
 # Hermes Skill Router
 
-Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https://github.com/NousResearch/hermes-agent) mit optionaler [OpenViking](https://github.com/volcengine/OpenViking)-Indexierung und semantischer Suche.
+Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https://github.com/NousResearch/hermes-agent) mit deterministischem Routing, direkten lokalen Ollama-Embeddings und optionaler [OpenViking](https://github.com/volcengine/OpenViking)-Indexierung.
 
-Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, liest deren `SKILL.md`, erzeugt mit einem konfigurierbaren Hermes-Hilfsmodell einen Einsatzplan, spiegelt Katalog und Plan nach OpenViking und empfiehlt vor jeder Benutzeraufgabe die passenden Skills in der richtigen Reihenfolge. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
+Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, bewahrt Hermes-Readiness und Dependency-Policy und empfiehlt vor jeder Aufgabe passende Skills in der richtigen Reihenfolge. Im Hybridmodus werden ausschließlich Skill-Name und -Beschreibung über einen Loopback-Ollama-Endpunkt eingebettet und profilspezifisch gecacht; ein generatives LLM wird für das Routing nicht aufgerufen. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.5.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
+> Status: frühe Community-Version (`0.6.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und Ollama-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 
@@ -106,6 +106,22 @@ hermes skill-router setup --target-profile <profil> --apply
 ```
 
 Aktuelle Hermes-Versionen reservieren `--profile` positionsunabhängig als globalen Selektor. Der Router-Alias benötigt deshalb `hermes --profile <aufrufendes-profil> skill-router setup --profile <zielprofil> --apply`; `--target-profile` vermeidet diese Mehrdeutigkeit.
+
+## Hybrid-Routing konfigurieren
+
+Einen eigenen Ollama-Dienst an eine numerische Loopback-Adresse binden und anschließend setzen:
+
+```bash
+hermes config set plugins.entries.skill-router.settings.routing_mode hybrid
+hermes config set plugins.entries.skill-router.settings.embedding_url http://127.0.0.1:11436
+hermes config set plugins.entries.skill-router.settings.embedding_model qwen3-embedding:0.6b
+hermes config set plugins.entries.skill-router.settings.embedding_dimensions 1024
+hermes config set plugins.entries.skill-router.settings.embedding_keep_alive 5m
+hermes config set plugins.entries.skill-router.settings.embedding_ambiguity_margin 0.02
+hermes config set plugins.entries.skill-router.settings.max_optional_supporting_skills 2
+```
+
+Akzeptiert werden nur numerische HTTP-Loopback-Ursprünge. URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, übergroße Antworten, falsche Vektoranzahl/-dimension und nicht-endliche Werte werden abgewiesen. Fehler fallen offen auf das deterministische Routing zurück und blockieren Hermes nicht.
 
 ## Lokales Planungsmodell konfigurieren
 
@@ -255,13 +271,21 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: deterministic     # deterministic | model
+        routing_mode: deterministic     # deterministic | hybrid | embedding | model
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
         deterministic_min_score: 20
         deterministic_supporting_min_score: 24
-        max_optional_supporting_skills: 1
+        max_optional_supporting_skills: 2
+        embedding_url: http://127.0.0.1:11436
+        embedding_model: qwen3-embedding:0.6b
+        embedding_dimensions: 1024
+        embedding_timeout_seconds: 5.0
+        embedding_keep_alive: 5m
+        embedding_batch_size: 32
+        embedding_ambiguity_margin: 0.02
+        embedding_min_score: 0.35
         max_audit_entries: 100          # begrenzt auf 10-1000
         learning_mode: shadow           # off | shadow; kein active-Modus
         learning_min_samples: 5         # begrenzt auf 3-100 und Audit-Limit

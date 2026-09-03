@@ -36,6 +36,20 @@ class OpenVikingBridge:
         value = self.ctx.get_config("openviking_enabled", False)
         return value if isinstance(value, bool) else False
 
+    @property
+    def read_enabled(self) -> bool:
+        if not self.enabled:
+            return False
+        value = self.ctx.get_config("openviking_read_enabled", True)
+        return value if isinstance(value, bool) else True
+
+    @property
+    def auto_write_enabled(self) -> bool:
+        if not self.enabled:
+            return False
+        value = self.ctx.get_config("openviking_auto_write_enabled", True)
+        return value if isinstance(value, bool) else True
+
     def sync_skills(
         self,
         records: list[dict[str, Any]],
@@ -45,8 +59,14 @@ class OpenVikingBridge:
         should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Reconcile router-owned skill mirrors without touching user-owned skills."""
-        if not self.enabled:
-            return {"enabled": False, "synced": 0, "deleted": 0, "failed": [], "owned_names": []}
+        if not self.auto_write_enabled:
+            return {
+                "enabled": self.enabled,
+                "synced": 0,
+                "deleted": 0,
+                "failed": [],
+                "owned_names": sorted(previous_owned or ()),
+            }
         existing = self._existing_names()
         by_name = {str(entry.get("name")): entry for entry in entries}
         current_owned: set[str] = set()
@@ -116,7 +136,7 @@ class OpenVikingBridge:
 
     def find_scores(self, task: str, entries: list[dict[str, Any]]) -> dict[str, float]:
         """Return OpenViking retrieval scores mapped back to canonical Hermes names."""
-        if not self.enabled:
+        if not self.read_enabled:
             return {}
         limit = self._int_setting("openviking_retrieval_limit", 12, 1, 100)
         threshold = self._float_setting("openviking_score_threshold", 0.15, 0.0, 1.0)
@@ -153,7 +173,7 @@ class OpenVikingBridge:
 
     def write_plan(self, plan_markdown: str) -> bool:
         """Store the generated routing artifact as an OpenViking resource file."""
-        if not self.enabled:
+        if not self.auto_write_enabled:
             return False
         try:
             configured_uri = str(self.ctx.get_config(
