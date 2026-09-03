@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.3.0`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.4.0`). Test it with your Hermes and OpenViking versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -21,8 +21,8 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering.
 4. **Readiness:** declared command, Python-module, skill, and configuration requirements are checked passively during catalog refresh and cached with the plan. No setup action is executed.
 5. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
-6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written to `viking://~/resources/hermes-skill-router/{profile}/plan.md` by default.
-7. **Every task:** OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic routing uses a strict no-skill gate, including after a model timeout or error.
+6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written under `viking://~/resources/hermes-skill-router/{profile-scope}/plan.md` by default.
+7. **Every task:** when enabled, OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic routing uses a strict no-skill gate, including after a model timeout or error.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
@@ -31,7 +31,7 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 13. **Shadow learning:** current-version, high-confidence quality history is rebuilt into profile-local skill-role aggregates and conservative diagnostic biases. A separate shadow comparison is recorded, while the real selection remains unchanged.
 14. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
 
-Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data.
+Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data. Every snapshot, audit, learning envelope, and setup roster carries an opaque canonical-home scope token, so state copied by profile cloning or renaming is rejected before catalog use or OpenViking reconciliation. The token does not reveal the profile path.
 
 ## Requirements
 
@@ -46,35 +46,43 @@ No additional Python package is required. The OpenViking server should remain in
 
 ## Installation
 
-Replace `OWNER` with the GitHub owner after publishing:
+Install the plugin once in the active profile, then let its read-only setup plan discover the profiles Hermes currently owns:
 
 ```bash
-hermes plugins install OWNER/hermes-skill-router --enable
-hermes skill-router refresh --wait
+hermes plugins install MKI13/hermes-skill-router --enable
+hermes skill-router setup
 ```
 
-For a reproducible installation, pin a full commit:
+Hermes Git plugins are physically installed and activated per profile. The Router follows that native model: `setup --apply` invokes the official profile-scoped Hermes installer and config commands sequentially, so the user does not repeat them manually for every profile.
+
+Review the dry-run, then apply it:
 
 ```bash
-hermes plugins install OWNER/hermes-skill-router \
-  --ref 0123456789abcdef0123456789abcdef01234567 \
+hermes skill-router setup --dry-run
+hermes skill-router setup --apply
+hermes skill-router profiles
+```
+
+The initial settings are `deterministic`, `warn`, `shadow`, and OpenViking disabled. Existing Router settings and intentionally disabled installations are preserved. Limit a Canary rollout without embedding any profile names in Router logic:
+
+```bash
+hermes skill-router setup --target-profile <profile>
+hermes skill-router setup --target-profile <profile> --apply
+```
+
+The Router also accepts `--profile` as requested by its CLI. Current Hermes releases pre-parse that spelling as a global selector wherever it appears, so pass the invoking profile first when using the exact alias: `hermes --profile <invoking-profile> skill-router setup --profile <target-profile> --apply`. `--target-profile` avoids that host-CLI ambiguity.
+
+Use `hermes skill-router profiles --sync` after creating, deleting, or renaming profiles. This explicit sync applies missing safe Router setup through official Hermes commands, records only the detected names in the invoking profile's own inventory state, and reports new or removed names. It does not delete profiles, overwrite explicit settings, re-enable disabled installations, or merge profile state.
+
+For a reproducible first installation, Hermes also accepts the release's full commit:
+
+```bash
+hermes plugins install MKI13/hermes-skill-router \
+  --ref <40-character-release-commit> \
   --enable
-hermes skill-router refresh --wait
 ```
 
-### Multiple Hermes profiles
-
-Install and build the plan separately for every profile that should use the router:
-
-```bash
-hermes --profile coding plugins install OWNER/hermes-skill-router --enable
-hermes --profile coding skill-router refresh --wait
-
-hermes --profile research plugins install OWNER/hermes-skill-router --enable
-hermes --profile research skill-router refresh --wait
-```
-
-This is intentional: different profiles may expose different skills, tools, projects, and configuration.
+Every profile keeps its own plugin config, visible skill catalog, readiness, audit, and learning state. A setup failure in one profile is reported without rolling back successful profiles.
 
 ## Configure the planner model
 
@@ -150,6 +158,11 @@ Inside a session:
 From the terminal:
 
 ```bash
+hermes skill-router setup
+hermes skill-router setup --apply
+hermes skill-router setup --target-profile <profile> --apply
+hermes skill-router profiles
+hermes skill-router profiles --sync
 hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
@@ -231,7 +244,7 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: model             # model | deterministic
+        routing_mode: deterministic     # deterministic | model
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
@@ -248,7 +261,7 @@ plugins:
         analysis_model_timeout_seconds: 25
         routing_catalog_chars: 60000
         routing_model_timeout_seconds: 20
-        openviking_enabled: true
+        openviking_enabled: false
         openviking_url: http://127.0.0.1:1933
         openviking_timeout_seconds: 10
         openviking_retrieval_limit: 12

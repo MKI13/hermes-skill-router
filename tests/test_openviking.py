@@ -7,13 +7,14 @@ import pytest
 
 from skill_router_plugin import openviking as openviking_module
 from skill_router_plugin.openviking import OpenVikingBridge, _validate_base_url
+from skill_router_plugin.profile_identity import ProfileIdentity
 
 
 class Ctx:
     profile_name = "research"
 
     def __init__(self, settings=None):
-        self.settings = settings or {}
+        self.settings = {"openviking_enabled": True, **(settings or {})}
 
     def get_config(self, key, default=None):
         return self.settings.get(key, default)
@@ -45,11 +46,19 @@ def test_sync_uses_profile_scoped_mirror_name_and_tracks_hash(monkeypatch):
     assert report["deleted"] == 0
     assert report["failed"] == []
     assert len(report["owned_names"]) == 1
-    assert entries[0]["openviking_name"].startswith("hermes-research-github-workflow-")
+    assert entries[0]["openviking_name"].startswith("hermes-research-")
     assert entries[0]["openviking_hash"] == "abc"
     post = next(call for call in requests if call[0] == "POST")
     assert post[1] == "/api/v1/skills"
     assert "Canonical Hermes skill name: `github:workflow`" in post[2]["data"]
+
+
+def test_external_names_do_not_collide_for_similar_profile_labels():
+    first = OpenVikingBridge(Ctx(), ProfileIdentity("foo_bar", "home-v1:1111111111aaaa"))
+    second = OpenVikingBridge(Ctx(), ProfileIdentity("foo-bar", "home-v1:2222222222bbbb"))
+
+    assert first._mirror_name("demo") != second._mirror_name("demo")
+    assert first.profile.external_slug != second.profile.external_slug
 
 
 def test_sync_deletes_only_previously_owned_stale_mirrors(monkeypatch):
@@ -128,7 +137,24 @@ def test_plan_uri_expands_the_active_profile(monkeypatch):
     )
 
     assert bridge.write_plan("# Plan") is True
-    assert requests[0][2]["uri"] == "viking://~/resources/hermes-skill-router/research/plan.md"
+    uri = requests[0][2]["uri"]
+    assert uri.startswith("viking://~/resources/hermes-skill-router/research-")
+    assert uri.endswith("/plan.md")
+
+
+def test_plan_uri_adds_profile_scope_when_custom_template_omits_placeholder(monkeypatch):
+    bridge = OpenVikingBridge(Ctx({"openviking_plan_uri": "viking://~/resources/custom/plan.md"}))
+    requests = []
+    monkeypatch.setattr(
+        bridge,
+        "_request",
+        lambda method, path, body=None, **kwargs: requests.append(body) or {},
+    )
+
+    assert bridge.write_plan("# Plan") is True
+    uri = requests[0]["uri"]
+    assert uri.startswith("viking://~/resources/custom/research-")
+    assert uri.endswith("/plan.md")
 
 
 def test_url_validation_blocks_metadata_and_insecure_remote_credentials():

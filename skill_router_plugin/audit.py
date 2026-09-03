@@ -7,6 +7,7 @@ import hashlib
 import threading
 from typing import Any
 
+from .profile_identity import ProfileIdentity, legacy_audit_matches_profile
 from .quality import (
     normalize_quality,
     quality_last,
@@ -16,15 +17,20 @@ from .quality import (
 )
 
 _AUDIT_STATE_KEY = "router.audit"
-_AUDIT_VERSION = 1
+_AUDIT_VERSION = 2
+_LEGACY_AUDIT_VERSION = 1
 _RESULTS = {"complete", "partial", "missed", "not_applicable", "unknown"}
 
 
 class SkillExecutionAudit:
     """Persist compact routing and skill-view execution metadata."""
 
-    def __init__(self, ctx: Any) -> None:
+    def __init__(self, ctx: Any, profile: ProfileIdentity | None = None) -> None:
         self.ctx = ctx
+        if profile is None:
+            name = str(getattr(ctx, "profile_name", "custom") or "custom")[:100]
+            profile = ProfileIdentity(name=name, scope_token=f"legacy-test:{name}")
+        self.profile = profile
         self._lock = threading.RLock()
 
     def record_decision(
@@ -56,7 +62,7 @@ class SkillExecutionAudit:
                 "turn_id": _opaque_id(turn_id),
                 "session_id": _opaque_id(session_id),
                 "timestamp": now,
-                "profile": str(getattr(self.ctx, "profile_name", "default"))[:100],
+                "profile": self.profile.name,
                 "method": str(method or "unknown")[:40],
                 "policy_status": _policy_status(policy_status),
                 "enforcement_mode": _enforcement_mode(enforcement_mode),
@@ -429,13 +435,25 @@ class SkillExecutionAudit:
             raw = self.ctx.state.get(_AUDIT_STATE_KEY, default={})
         except Exception:
             return _empty_state()
-        if not isinstance(raw, dict) or raw.get("version") != _AUDIT_VERSION:
+        if not isinstance(raw, dict):
             return _empty_state()
+        version = raw.get("version")
         entries = raw.get("entries")
         if not isinstance(entries, list):
             return _empty_state()
+        if version == _AUDIT_VERSION:
+            if raw.get("profile_scope") != self.profile.scope_token:
+                return _empty_state()
+            selected_entries = entries
+        elif (
+            version == _LEGACY_AUDIT_VERSION
+            and legacy_audit_matches_profile(raw, self.profile)
+        ):
+            selected_entries = entries
+        else:
+            return _empty_state()
         normalized = [
-            selected for item in entries
+            selected for item in selected_entries
             if isinstance(item, dict)
             for selected in [_normalize_entry(item)]
             if selected is not None
@@ -443,8 +461,14 @@ class SkillExecutionAudit:
         return {"version": _AUDIT_VERSION, "entries": normalized[-self._history_limit():]}
 
     def _save_state(self, state: dict[str, Any]) -> None:
+        scoped = {
+            **state,
+            "version": _AUDIT_VERSION,
+            "profile": self.profile.name,
+            "profile_scope": self.profile.scope_token,
+        }
         try:
-            self.ctx.state.set(_AUDIT_STATE_KEY, state)
+            self.ctx.state.set(_AUDIT_STATE_KEY, scoped)
         except Exception:
             return
 

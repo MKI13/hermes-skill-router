@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from copy import deepcopy
 import sys
+from types import SimpleNamespace
 
 from __init__ import register
 
@@ -53,6 +55,40 @@ class Ctx:
 
     def on_unload(self, callback):
         self.unloads.append(callback)
+
+
+class CliCompatibility:
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.capabilities = SimpleNamespace(
+            profile_discovery=True,
+            profile_configuration=True,
+            skill_execution_audit=True,
+            skill_execution_guard=True,
+        )
+
+    def profile_scope_id(self):
+        return "home-v1:test"
+
+    def status_lines(self):
+        return []
+
+    def register_auxiliary_task(self, **kwargs):
+        self.ctx.register_auxiliary_task(**kwargs)
+        return True
+
+    def register_skill_lifecycle(self, callback):
+        self.ctx.register_hook("on_skill_lifecycle", callback)
+        return True
+
+    def register_skill_execution_guard(self, callback):
+        self.ctx.register_hook("pre_tool_call", callback)
+        return True
+
+    def register_skill_execution_audit(self, post_tool, post_llm):
+        self.ctx.register_hook("post_tool_call", post_tool)
+        self.ctx.register_hook("post_llm_call", post_llm)
+        return True
 
 
 class DegradedCtx(Ctx):
@@ -113,6 +149,7 @@ def test_registered_hook_pipeline_audits_a_loaded_primary(monkeypatch):
     runtime = hooks["pre_llm_call"].__self__
     owning_module = sys.modules[runtime.__class__.__module__]
     ctx.state.set("router.snapshot", {
+        "profile": "default",
         "catalog_hash": "catalog",
         "entries": [{
             "name": "github",
@@ -163,3 +200,67 @@ def test_registered_hook_pipeline_audits_a_loaded_primary(monkeypatch):
     assert "Result: complete" in output
     assert "Primary loaded: yes" in output
     assert "SECRET" not in persisted
+
+
+def test_registered_profile_setup_cli_defaults_to_dry_run(monkeypatch, capsys):
+    root_module = sys.modules[register.__module__]
+    calls = []
+
+    class Coordinator:
+        def __init__(self, ctx, compatibility):
+            pass
+
+        def setup(self, profiles=None, apply=False):
+            calls.append((profiles, apply))
+            return SimpleNamespace(failed=(), render=lambda: "SETUP PLAN")
+
+        def profiles(self):
+            return SimpleNamespace(render=lambda: "PROFILE LIST")
+
+        def sync(self):
+            return SimpleNamespace(failed=(), render=lambda: "SYNC RESULT")
+
+    monkeypatch.setattr(root_module, "ProfileSetupCoordinator", Coordinator)
+    monkeypatch.setattr(root_module, "HermesCompatibility", CliCompatibility)
+    ctx = Ctx()
+    register(ctx)
+    command = ctx.cli_commands[0]
+    parser = argparse.ArgumentParser()
+    command["setup_fn"](parser)
+
+    args = parser.parse_args(["setup", "--profile", "alpha", "--dry-run"])
+    result = command["handler_fn"](args)
+
+    assert result == 0
+    assert calls == [(["alpha"], False)]
+    assert capsys.readouterr().out.strip() == "SETUP PLAN"
+
+
+def test_registered_profiles_sync_returns_honest_partial_failure(monkeypatch, capsys):
+    root_module = sys.modules[register.__module__]
+
+    class Coordinator:
+        def __init__(self, ctx, compatibility):
+            pass
+
+        def setup(self, profiles=None, apply=False):
+            raise AssertionError("not setup")
+
+        def profiles(self):
+            raise AssertionError("not a plain roster")
+
+        def sync(self):
+            return SimpleNamespace(failed=("beta",), render=lambda: "SYNC PARTIAL")
+
+    monkeypatch.setattr(root_module, "ProfileSetupCoordinator", Coordinator)
+    monkeypatch.setattr(root_module, "HermesCompatibility", CliCompatibility)
+    ctx = Ctx()
+    register(ctx)
+    command = ctx.cli_commands[0]
+    parser = argparse.ArgumentParser()
+    command["setup_fn"](parser)
+
+    result = command["handler_fn"](parser.parse_args(["profiles", "--sync"]))
+
+    assert result == 1
+    assert capsys.readouterr().out.strip() == "SYNC PARTIAL"

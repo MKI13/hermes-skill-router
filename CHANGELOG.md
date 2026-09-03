@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Added compatibility-wrapped discovery of all live Hermes profiles and metadata-only `profiles` reporting.
+- Added read-only-by-default adaptive setup, selective apply, partial-failure rollback, and lifecycle-aware roster sync through official profile-scoped Hermes commands.
+- Added safe initial defaults while preserving explicit settings and intentionally disabled installations.
+- Scoped snapshots, audits, shadow learning, OpenViking ownership, and profile inventory to opaque canonical-home identities so cloned or renamed profile state cannot cross profile boundaries.
+- Kept routing, readiness, audit, learning, and optional OpenViking behavior strictly profile-local; no active learning or hard-enforcement changes were made.
+
 ## 0.3.0
 
 - Added a calibrated deterministic no-skill gate with explicit-request preservation and readiness-independent relevance.

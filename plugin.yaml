@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.3.0
+version: 0.4.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -16,7 +16,7 @@ provides_hooks:
 config_schema:
   routing_mode:
     type: str
-    default: model
+    default: deterministic
     description: "Routing mode: model or deterministic."
   deep_refresh_on_start:
     type: bool
@@ -84,7 +84,7 @@ config_schema:
     description: Per-turn planner timeout, capped below Hermes hook timeout.
   openviking_enabled:
     type: bool
-    default: true
+    default: false
     description: Sync skill mirrors and query OpenViking with fail-open fallback.
   openviking_url:
     type: str

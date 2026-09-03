@@ -6,9 +6,11 @@ from pathlib import Path
 
 try:
     from .skill_router_plugin.compat import HermesCompatibility
+    from .skill_router_plugin.profiles import ProfileSetupCoordinator
     from .skill_router_plugin.runtime import SkillRouterRuntime
 except ImportError:
     from skill_router_plugin.compat import HermesCompatibility
+    from skill_router_plugin.profiles import ProfileSetupCoordinator
     from skill_router_plugin.runtime import SkillRouterRuntime
 
 
@@ -16,6 +18,7 @@ def register(ctx) -> None:
     """Register the profile-scoped router, hooks, command, and bundled skill."""
     compatibility = HermesCompatibility(ctx)
     runtime = SkillRouterRuntime(ctx, compatibility)
+    profile_setup = ProfileSetupCoordinator(ctx, compatibility)
     skill_path = Path(__file__).parent / "skills" / "skill-router" / "SKILL.md"
 
     compatibility.register_auxiliary_task(
@@ -55,6 +58,14 @@ def register(ctx) -> None:
     def setup_cli(parser) -> None:
         commands = parser.add_subparsers(dest="skill_router_action")
         commands.add_parser("status", help="Show routing-plan status")
+        profiles = commands.add_parser("profiles", help="Show discovered Hermes profiles")
+        profiles.add_argument("--sync", action="store_true", help="Apply missing safe setup and save the name-only roster")
+        setup = commands.add_parser("setup", help="Plan or apply adaptive profile setup")
+        setup_mode = setup.add_mutually_exclusive_group()
+        setup_mode.add_argument("--apply", action="store_true", help="Apply the displayed setup plan")
+        setup_mode.add_argument("--dry-run", action="store_true", help="Explicitly make no changes")
+        setup_mode.add_argument("--sync", action="store_true", help="Apply missing safe setup and update the profile roster")
+        setup.add_argument("--target-profile", "--profile", action="append", dest="setup_profiles", help="Limit setup to one detected profile")
         refresh = commands.add_parser("refresh", help="Refresh and analyze the skill plan")
         refresh.add_argument("--wait", action="store_true", help="Wait for deep model analysis")
         commands.add_parser("plan", help="Print the compact routing plan")
@@ -75,6 +86,34 @@ def register(ctx) -> None:
         if action == "status":
             print(runtime.status_text())
             return 0
+        if action == "profiles":
+            if not compatibility.capabilities.profile_discovery:
+                print("Hermes Skill Router Profiles\n\nProfile discovery: degraded")
+                return 2
+            if getattr(args, "sync", False):
+                summary = profile_setup.sync()
+                print(summary.render())
+                return 1 if summary.failed else 0
+            summary = profile_setup.profiles()
+            print(summary.render())
+            return 1 if summary.error else 0
+        if action == "setup":
+            if not compatibility.capabilities.profile_discovery:
+                print("Hermes Skill Router Setup\n\nProfile discovery: degraded")
+                return 2
+            if getattr(args, "apply", False) and not compatibility.capabilities.profile_configuration:
+                print("Hermes Skill Router Setup\n\nProfile configuration: degraded")
+                return 2
+            if getattr(args, "sync", False):
+                summary = profile_setup.sync()
+                print(summary.render())
+                return 1 if summary.failed else 0
+            summary = profile_setup.setup(
+                getattr(args, "setup_profiles", None),
+                apply=bool(getattr(args, "apply", False)),
+            )
+            print(summary.render())
+            return 1 if summary.failed else 0
         if action == "plan":
             print(runtime.plan_text())
             return 0
@@ -105,7 +144,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}")
+        print("Usage: hermes skill-router {status|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}")
         return 2
 
     ctx.register_cli_command(

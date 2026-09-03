@@ -32,6 +32,7 @@ from .planner import (
     select_skills,
 )
 from .policy import apply_routing_policy, detect_explicit_skill_names
+from .profile_identity import legacy_audit_matches_profile, resolve_profile_identity
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -66,9 +67,10 @@ class SkillRouterRuntime:
     ) -> None:
         self.ctx = ctx
         self.compatibility = compatibility or HermesCompatibility(ctx)
-        self.openviking = OpenVikingBridge(ctx)
-        self.audit = SkillExecutionAudit(ctx)
-        self.learning = ShadowLearning(ctx)
+        self.profile = resolve_profile_identity(ctx, self.compatibility)
+        self.openviking = OpenVikingBridge(ctx, self.profile)
+        self.audit = SkillExecutionAudit(ctx, self.profile)
+        self.learning = ShadowLearning(ctx, self.profile)
         self.guard = SkillExecutionGuard()
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -94,7 +96,7 @@ class SkillRouterRuntime:
         snapshot = self._snapshot()
         count = len(snapshot.get("entries", []))
         plan_hash = str(snapshot.get("catalog_hash") or "none")[:12]
-        profile = getattr(self.ctx, "profile_name", "default")
+        profile = self.profile.name
         return (
             "For every user request, obey the injected [Skill Router] recommendation. "
             "Load each recommended skill with skill_view before executing the task, in "
@@ -331,7 +333,8 @@ class SkillRouterRuntime:
                 entries.append(base_plan_entry(record))
         new_snapshot = {
             **snapshot,
-            "profile": getattr(self.ctx, "profile_name", "default"),
+            "profile": self.profile.name,
+            "profile_scope": self.profile.scope_token,
             "catalog_hash": catalog["catalog_hash"],
             "catalog_scanned_at": _utc_now(),
             "reader_mode": catalog.get("reader_mode", "unknown"),
@@ -395,7 +398,7 @@ class SkillRouterRuntime:
                 should_stop=self._stop.is_set,
             )
             openviking_plan_written = False if self._stop.is_set() else self.openviking.write_plan(
-                _plan_markdown(getattr(self.ctx, "profile_name", "default"), analyzed)
+                _plan_markdown(self.profile.name, analyzed)
             )
         except Exception as exc:
             openviking_report = {"enabled": True, "synced": 0, "failed": [str(exc)]}
@@ -796,11 +799,36 @@ class SkillRouterRuntime:
         except Exception:
             logger.warning("Skill Router state read failed", exc_info=True)
             return {}
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        stored_scope = value.get("profile_scope")
+        if stored_scope == self.profile.scope_token:
+            return value
+        if stored_scope is not None:
+            return {}
+        try:
+            raw_audit = self.ctx.state.get("router.audit", default={})
+        except Exception:
+            raw_audit = {}
+        if self.profile.name != "custom" and (
+            value.get("profile") == self.profile.name
+            or legacy_audit_matches_profile(raw_audit, self.profile)
+        ):
+            return {
+                **value,
+                "profile": self.profile.name,
+                "profile_scope": self.profile.scope_token,
+            }
+        return {}
 
     def _save_snapshot(self, snapshot: dict[str, Any]) -> None:
         quota = int(getattr(self.ctx.state, "quota_bytes", 10 * 1024 * 1024))
-        bounded = _fit_snapshot(snapshot, max(64 * 1024, int(quota * 0.9)))
+        scoped = {
+            **snapshot,
+            "profile": self.profile.name,
+            "profile_scope": self.profile.scope_token,
+        }
+        bounded = _fit_snapshot(scoped, max(64 * 1024, int(quota * 0.9)))
         with self._lock:
             self.ctx.state.set(_STATE_KEY, bounded)
 
@@ -935,8 +963,10 @@ class SkillRouterRuntime:
         return "warn"
 
     def _routing_mode(self) -> str:
-        mode = str(self.ctx.get_config("routing_mode", "model") or "model").casefold()
-        return mode if mode in {"model", "deterministic"} else "model"
+        mode = str(
+            self.ctx.get_config("routing_mode", "deterministic") or "deterministic"
+        ).casefold()
+        return mode if mode in {"model", "deterministic"} else "deterministic"
 
     def _bool_setting(self, key: str, default: bool) -> bool:
         value = self.ctx.get_config(key, default)

@@ -13,6 +13,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from .profile_identity import ProfileIdentity
+
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_ERROR_BYTES = 8192
 _BLOCKED_IPS = {ipaddress.ip_address("169.254.169.254"), ipaddress.ip_address("fd00:ec2::254")}
@@ -21,14 +23,18 @@ _BLOCKED_IPS = {ipaddress.ip_address("169.254.169.254"), ipaddress.ip_address("f
 class OpenVikingBridge:
     """Use released OpenViking skill/content APIs without sharing its Python env."""
 
-    def __init__(self, ctx: Any) -> None:
+    def __init__(self, ctx: Any, profile: ProfileIdentity | None = None) -> None:
         self.ctx = ctx
+        if profile is None:
+            name = str(getattr(ctx, "profile_name", "custom") or "custom")[:100]
+            profile = ProfileIdentity(name=name, scope_token=f"legacy-test:{name}")
+        self.profile = profile
         self._url_cache: dict[tuple[str, bool], str] = {}
 
     @property
     def enabled(self) -> bool:
-        value = self.ctx.get_config("openviking_enabled", True)
-        return value if isinstance(value, bool) else True
+        value = self.ctx.get_config("openviking_enabled", False)
+        return value if isinstance(value, bool) else False
 
     def sync_skills(
         self,
@@ -153,16 +159,12 @@ class OpenVikingBridge:
                 "openviking_plan_uri",
                 "viking://~/resources/hermes-skill-router/{profile}/plan.md",
             ))
-            profile_slug = re.sub(
-                r"[^a-z0-9-]+",
-                "-",
-                str(getattr(self.ctx, "profile_name", "default")).casefold(),
-            ).strip("-") or "default"
+            profile_slug = self.profile.external_slug
             self._request(
                 "POST",
                 "/api/v1/content/write",
                 {
-                    "uri": configured_uri.replace("{profile}", profile_slug),
+                    "uri": _profile_scoped_uri(configured_uri, profile_slug),
                     "content": plan_markdown,
                     "mode": "replace",
                     "wait": False,
@@ -187,9 +189,14 @@ class OpenVikingBridge:
         }
 
     def _mirror_name(self, hermes_name: str) -> str:
-        profile = str(getattr(self.ctx, "profile_name", "default"))
-        slug = re.sub(r"[^a-z0-9-]+", "-", f"{profile}-{hermes_name}".casefold()).strip("-")
-        digest = hashlib.sha256(f"{profile}\0{hermes_name}".encode("utf-8")).hexdigest()[:10]
+        slug = re.sub(
+            r"[^a-z0-9_-]+",
+            "-",
+            f"{self.profile.external_slug}-{hermes_name}".casefold(),
+        ).strip("-_")
+        digest = hashlib.sha256(
+            f"{self.profile.scope_token}\0{hermes_name}".encode("utf-8")
+        ).hexdigest()[:10]
         return f"hermes-{slug[:38]}-{digest}"
 
     def _mirror_skill(self, record: dict[str, Any], ov_name: str) -> str:
@@ -285,6 +292,15 @@ class OpenVikingBridge:
 class _RejectRedirects(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise HTTPError(req.full_url, code, "OpenViking redirects are disabled", headers, fp)
+
+
+def _profile_scoped_uri(template: str, profile_slug: str) -> str:
+    if "{profile}" in template:
+        return template.replace("{profile}", profile_slug)
+    prefix, separator, leaf = template.rpartition("/")
+    if not separator:
+        return f"{template}/{profile_slug}/plan.md"
+    return f"{prefix}/{profile_slug}/{leaf or 'plan.md'}"
 
 
 def _validate_base_url(raw: str, *, has_credentials: bool) -> str:

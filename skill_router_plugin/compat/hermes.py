@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import importlib
+import json
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping
+import shutil
+import subprocess
+import sys
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 _RAW_API_NAMES = (
     "get_project_skills_dirs",
@@ -14,6 +20,62 @@ _RAW_API_NAMES = (
     "iter_project_skill_files",
     "iter_skill_index_files",
 )
+_EXACT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+_SAFE_SETUP_DEFAULTS = {
+    "routing_mode": "deterministic",
+    "enforcement_mode": "warn",
+    "learning_mode": "shadow",
+    "openviking_enabled": "false",
+}
+
+
+class ProfileDiscoveryError(RuntimeError):
+    """Authoritative Hermes profile enumeration failed."""
+
+
+@dataclass(frozen=True)
+class DiscoveredProfile:
+    """One live profile name returned by Hermes' authoritative profile API."""
+
+    name: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ProfileCommandResult:
+    """Sanitized result of one Hermes CLI operation for a profile."""
+
+    returncode: int
+    stdout: str = ""
+
+
+@dataclass(frozen=True)
+class PluginInstallSpec:
+    """Credential-free source and exact revision recorded by Hermes."""
+
+    source: str
+    revision: str = ""
+
+
+@dataclass(frozen=True)
+class ProfileInspection:
+    """Minimal Router metadata observed through Hermes CLI commands."""
+
+    name: str
+    installed: bool
+    enabled: bool
+    version: str = ""
+    skill_count: int | None = None
+    routing_mode: str = ""
+    enforcement_mode: str = ""
+    learning_mode: str = ""
+    openviking_enabled: bool | None = None
+    settings: tuple[tuple[str, str | None], ...] = ()
+    error: str = ""
+
+    def setting(self, name: str) -> str | None:
+        """Return one explicitly configured setup value."""
+        return dict(self.settings).get(name)
 
 
 @dataclass(frozen=True)
@@ -27,6 +89,8 @@ class CompatibilityCapabilities:
     skills_tool_bootstrap: bool
     skill_execution_audit: bool
     skill_execution_guard: bool
+    profile_discovery: bool
+    profile_configuration: bool
     issues: tuple[str, ...]
 
     @property
@@ -39,6 +103,8 @@ class CompatibilityCapabilities:
             self.auxiliary_tasks,
             self.skill_execution_audit,
             self.skill_execution_guard,
+            self.profile_discovery,
+            self.profile_configuration,
         )
         return "full" if all(required) else "degraded"
 
@@ -51,9 +117,13 @@ class HermesCompatibility:
         ctx: Any,
         *,
         module_loader: Callable[[str], Any] | None = None,
+        command_runner: Callable[..., Any] | None = None,
+        hermes_executable: str | None = None,
     ) -> None:
         self.ctx = ctx
         self._module_loader = module_loader or importlib.import_module
+        self._command_runner = command_runner or subprocess.run
+        self._hermes_executable = hermes_executable or _running_hermes_executable()
         self._issues: list[str] = []
         self._raw_functions: dict[str, Callable[..., Any]] = {}
         self._plugin_skill_lookup: Callable[[str], Any] | None = None
@@ -64,7 +134,13 @@ class HermesCompatibility:
         self._skill_execution_audit = callable(getattr(ctx, "register_hook", None))
         self._skill_execution_guard = callable(getattr(ctx, "register_hook", None))
         self._skills_tool_bootstrap = False
+        self._profile_discovery = False
+        self._profile_configuration = False
+        self._profile_functions: dict[str, Callable[..., Any]] = {}
+        self._install_metadata_reader: Callable[[], Any] | None = None
+        self._active_home: Callable[[], Any] | None = None
         self._detect_internal_apis()
+        self._detect_profile_apis()
 
     @property
     def capabilities(self) -> CompatibilityCapabilities:
@@ -77,6 +153,8 @@ class HermesCompatibility:
             skills_tool_bootstrap=self._skills_tool_bootstrap,
             skill_execution_audit=self._skill_execution_audit,
             skill_execution_guard=self._skill_execution_guard,
+            profile_discovery=self._profile_discovery,
+            profile_configuration=self._profile_configuration,
             issues=tuple(self._issues),
         )
 
@@ -89,6 +167,8 @@ class HermesCompatibility:
         auxiliary = "available" if capabilities.auxiliary_tasks else "unavailable"
         audit = "available" if capabilities.skill_execution_audit else "unavailable"
         guard = "available" if capabilities.skill_execution_guard else "unavailable"
+        discovery = "available" if capabilities.profile_discovery else "degraded"
+        configuration = "available" if capabilities.profile_configuration else "degraded"
         return [
             f"Hermes compatibility: {capabilities.status}",
             f"Raw skill reader: {raw}",
@@ -97,6 +177,8 @@ class HermesCompatibility:
             f"Auxiliary tasks: {auxiliary}",
             f"Skill execution audit: {audit}",
             f"Skill execution guard: {guard}",
+            f"Profile discovery: {discovery}",
+            f"Profile configuration: {configuration}",
         ]
 
     def readiness_hints(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -279,6 +361,206 @@ class HermesCompatibility:
 
         return content_by_name, "raw-path-current-hermes"
 
+    def profile_scope_id(self) -> str:
+        """Return an opaque stable token for the active Hermes home."""
+        profile_name = str(getattr(self.ctx, "profile_name", "custom") or "custom")
+        home: Any = None
+        get_profile_dir = self._profile_functions.get("get_profile_dir")
+        if get_profile_dir is not None and profile_name != "custom":
+            try:
+                home = get_profile_dir(profile_name)
+            except Exception:
+                home = None
+        if home is None and self._active_home is not None:
+            try:
+                home = self._active_home()
+            except Exception:
+                home = None
+        if home is None:
+            state_path = getattr(getattr(self.ctx, "state", None), "path", None)
+            if state_path is not None:
+                try:
+                    home = Path(state_path).resolve().parents[2]
+                except (IndexError, OSError):
+                    home = None
+        identity = _resolved(home) if home is not None else f"unresolved:{profile_name}"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        return f"home-v1:{digest}"
+
+    def discover_profiles(self) -> list[DiscoveredProfile]:
+        """Return live profiles through Hermes without reading their config files."""
+        if not self._profile_discovery:
+            return []
+        list_names = self._profile_functions["list_profile_names"]
+        exists = self._profile_functions["profile_exists"]
+        get_dir = self._profile_functions["get_profile_dir"]
+        validate = self._profile_functions["validate_profile_name"]
+        discovered: dict[str, DiscoveredProfile] = {}
+        try:
+            raw_names = list_names()
+        except Exception as exc:
+            self._profile_discovery = False
+            self._profile_configuration = False
+            self._record_issue("profile discovery", exc)
+            raise ProfileDiscoveryError("Hermes profile discovery failed") from exc
+        if not isinstance(raw_names, (list, tuple, set)):
+            self._profile_discovery = False
+            self._profile_configuration = False
+            raise ProfileDiscoveryError("Hermes profile discovery returned invalid data")
+        for raw_name in raw_names:
+            name = str(raw_name or "").strip()
+            try:
+                validate(name)
+                if not exists(name):
+                    continue
+                _ = Path(get_dir(name)).expanduser().resolve(strict=False)
+            except Exception as exc:
+                self._profile_discovery = False
+                self._profile_configuration = False
+                self._record_issue(f"profile {name[:64] or '<empty>'}", exc)
+                raise ProfileDiscoveryError(
+                    "Hermes profile discovery failed during profile validation"
+                ) from exc
+            discovered[name] = DiscoveredProfile(name=name)
+        return [discovered[name] for name in sorted(discovered)]
+
+    def inspect_profile(self, profile_name: str) -> ProfileInspection:
+        """Inspect only Router metadata exposed by Hermes CLI for one profile."""
+        listing = self.run_profile_command(
+            profile_name,
+            ("plugins", "list", "--json", "--no-bundled"),
+        )
+        if listing.returncode != 0:
+            return ProfileInspection(
+                name=profile_name,
+                installed=False,
+                enabled=False,
+                error=f"plugin inventory exited {listing.returncode}",
+            )
+        installed = False
+        enabled = False
+        version = ""
+        try:
+            plugin_entries = json.loads(listing.stdout)
+        except (TypeError, ValueError):
+            plugin_entries = None
+        if not isinstance(plugin_entries, list):
+            return ProfileInspection(
+                name=profile_name,
+                installed=False,
+                enabled=False,
+                error="plugin inventory returned invalid data",
+            )
+        for entry in plugin_entries:
+            if not isinstance(entry, dict) or entry.get("name") != "skill-router":
+                continue
+            installed = True
+            status = str(entry.get("status") or "").casefold()
+            enabled = status == "enabled"
+            version = str(entry.get("version") or "")[:40]
+            break
+
+        settings: list[tuple[str, str | None]] = []
+        for key in _SAFE_SETUP_DEFAULTS:
+            value: str | None = None
+            for section in ("settings", "config"):
+                result = self.run_profile_command(
+                    profile_name,
+                    ("config", "get", f"plugins.entries.skill-router.{section}.{key}"),
+                )
+                if result.returncode == 0:
+                    value = result.stdout.strip()[:100]
+                    break
+            settings.append((key, value))
+
+        skill_count: int | None = None
+        routing_mode = ""
+        enforcement_mode = ""
+        learning_mode = ""
+        openviking_enabled: bool | None = None
+        error = ""
+        if enabled:
+            status = self.run_profile_command(profile_name, ("skill-router", "status"))
+            if status.returncode != 0:
+                error = f"router status exited {status.returncode}"
+            else:
+                fields = _status_fields(status.stdout)
+                skill_count = _optional_int(fields.get("Indexed skills"))
+                routing_mode = fields.get("Routing mode", "")[:40]
+                enforcement_mode = fields.get("Enforcement mode", "")[:40]
+                learning_mode = fields.get("Learning", "")[:40]
+                raw_openviking = fields.get("OpenViking enabled/synced", "").split("/", 1)[0].strip()
+                if raw_openviking in {"True", "False"}:
+                    openviking_enabled = raw_openviking == "True"
+        return ProfileInspection(
+            name=profile_name,
+            installed=installed,
+            enabled=enabled,
+            version=version,
+            skill_count=skill_count,
+            routing_mode=routing_mode,
+            enforcement_mode=enforcement_mode,
+            learning_mode=learning_mode,
+            openviking_enabled=openviking_enabled,
+            settings=tuple(settings),
+            error=error,
+        )
+
+    def current_plugin_install_spec(self) -> PluginInstallSpec:
+        """Return the scrubbed source and exact installed revision when recorded."""
+        source = ""
+        revision = ""
+        if self._install_metadata_reader is not None:
+            try:
+                metadata = self._install_metadata_reader()
+                entry = metadata.get("skill-router") if isinstance(metadata, dict) else None
+                if isinstance(entry, dict):
+                    candidate = _safe_install_source(entry.get("source"))
+                    if candidate is not None:
+                        source = candidate
+                    candidate_revision = str(entry.get("revision") or "").casefold()
+                    if _EXACT_REVISION.fullmatch(candidate_revision):
+                        revision = candidate_revision
+            except Exception as exc:
+                self._record_issue("plugin install metadata", exc)
+        return PluginInstallSpec(source=source, revision=revision)
+
+    def run_profile_command(
+        self,
+        profile_name: str,
+        argv: Sequence[str],
+        *,
+        timeout_seconds: int = 180,
+    ) -> ProfileCommandResult:
+        """Run one official Hermes CLI operation without a shell or stderr disclosure."""
+        if not self._profile_configuration:
+            return ProfileCommandResult(returncode=2)
+        validate = self._profile_functions.get("validate_profile_name")
+        try:
+            if validate is None:
+                raise RuntimeError("profile validation unavailable")
+            validate(profile_name)
+            executable = self._hermes_executable or shutil.which("hermes")
+            if not executable:
+                raise RuntimeError("Hermes executable unavailable")
+            completed = self._command_runner(
+                [executable, "--profile", profile_name, *argv],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(1, min(int(timeout_seconds), 600)),
+                stdin=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception as exc:
+            self._record_issue("profile configuration", exc)
+            return ProfileCommandResult(returncode=1)
+        return ProfileCommandResult(
+            returncode=int(getattr(completed, "returncode", 1)),
+            stdout=str(getattr(completed, "stdout", "")),
+        )
+
     def _detect_internal_apis(self) -> None:
         try:
             skill_utils = self._module_loader("agent.skill_utils")
@@ -323,6 +605,60 @@ class HermesCompatibility:
             self._plugin_skill_lookup = lookup
             self._plugin_lookup = True
 
+    def _detect_profile_apis(self) -> None:
+        profiles = None
+        for module_name in ("hermes_cli.profiles", "hermes_agent.cli.profiles"):
+            try:
+                profiles = self._module_loader(module_name)
+            except Exception:
+                continue
+            break
+        required = (
+            "list_profile_names",
+            "profile_exists",
+            "get_profile_dir",
+            "validate_profile_name",
+        )
+        if profiles is None:
+            self._issues.append("Hermes profile API is unavailable")
+        else:
+            missing = []
+            for name in required:
+                value = getattr(profiles, name, None)
+                if callable(value):
+                    self._profile_functions[name] = value
+                else:
+                    missing.append(name)
+            self._profile_discovery = not missing
+            if missing:
+                self._issues.append("missing Hermes profile APIs: " + ", ".join(missing))
+
+        for module_name in ("hermes_constants", "hermes_agent.constants"):
+            try:
+                constants = self._module_loader(module_name)
+            except Exception:
+                continue
+            active_home = getattr(constants, "get_hermes_home", None)
+            if callable(active_home):
+                self._active_home = active_home
+                break
+
+        for module_name in ("hermes_cli.plugins_cmd", "hermes_agent.cli.plugins_cmd"):
+            try:
+                plugins_cmd = self._module_loader(module_name)
+            except Exception:
+                continue
+            reader = getattr(plugins_cmd, "_read_install_metadata", None)
+            if callable(reader):
+                self._install_metadata_reader = reader
+                break
+
+        self._profile_configuration = self._profile_discovery and bool(
+            self._hermes_executable or shutil.which("hermes")
+        )
+        if self._profile_discovery and not self._profile_configuration:
+            self._issues.append("Hermes executable is unavailable for profile configuration")
+
     def _record_issue(self, capability: str, exc: Exception) -> None:
         detail = f"{capability}: {type(exc).__name__}: {exc}"
         if detail not in self._issues:
@@ -358,3 +694,62 @@ def _resolved(path: Any) -> str:
         return str(Path(path).expanduser().resolve())
     except OSError:
         return str(Path(path).expanduser())
+
+
+def _running_hermes_executable() -> str | None:
+    candidate = Path(sys.argv[0]) if sys.argv else Path()
+    if candidate.name.casefold() not in {"hermes", "hermes.exe"}:
+        return None
+    try:
+        return str(candidate.resolve(strict=True))
+    except OSError:
+        return None
+
+
+def _safe_install_source(value: Any) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate or "\x00" in candidate or "\n" in candidate or "\r" in candidate:
+        return None
+    if Path(candidate).is_absolute():
+        return candidate
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", candidate):
+        return candidate
+    parsed = urlsplit(candidate)
+    if (
+        parsed.scheme == "file"
+        and parsed.netloc in {"", "localhost"}
+        and Path(parsed.path).is_absolute()
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return candidate
+    if (
+        parsed.scheme == "https"
+        and parsed.hostname == "github.com"
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", parsed.path)
+    ):
+        return candidate
+    return None
+
+
+def _status_fields(output: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if key in {"Indexed skills", "Routing mode", "Enforcement mode", "Learning", "OpenViking enabled/synced"}:
+            fields[key] = value.strip()
+    return fields
+
+
+def _optional_int(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None

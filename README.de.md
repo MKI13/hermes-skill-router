@@ -4,7 +4,7 @@ Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https
 
 Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, liest deren `SKILL.md`, erzeugt mit einem konfigurierbaren Hermes-Hilfsmodell einen Einsatzplan, spiegelt Katalog und Plan nach OpenViking und empfiehlt vor jeder Benutzeraufgabe die passenden Skills in der richtigen Reihenfolge. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.3.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
+> Status: frühe Community-Version (`0.4.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 
@@ -21,8 +21,8 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 3. Hermes liefert den effektiven Katalog aus vertrauenswürdigen Projekt-Skills, lokalen Profil-Skills, externen Verzeichnissen und aktiven Plugin-Skills.
 4. Deklarierte Befehls-, Python-Modul-, Skill- und Konfigurationsanforderungen werden beim Katalog-Refresh passiv geprüft und mit dem Plan gespeichert. Der Router führt kein Setup aus.
 5. Nur neue oder geänderte Skill-Dokumente werden erneut analysiert.
-6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profile}/plan.md`.
-7. Vor jeder Aufgabe liefert OpenViking semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge. Deterministisches Routing verwendet auch nach Modell-Timeouts und -Fehlern dasselbe strikte No-Skill-Gate.
+6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profil-scope}/plan.md`.
+7. Wenn aktiviert, liefert OpenViking vor jeder Aufgabe semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge. Deterministisches Routing verwendet auch nach Modell-Timeouts und -Fehlern dasselbe strikte No-Skill-Gate.
 8. Ein deterministisches Policy Gate prüft Katalog-Readiness, explizite Benutzerwünsche, Alternativen, deklarierte Skill-Abhängigkeiten, Rollen, Dependency-Reihenfolge und das Skill-Limit. Modellausgaben umgehen diese Schicht nicht.
 9. Der finale Policy-Plan initialisiert einen turn-isolierten Execution Guard. Der Standardmodus warnt nur; optionale harte Modi verlangen über `pre_tool_call` erfolgreiche geordnete `skill_view`-Aufrufe vor Task-Tools.
 10. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
@@ -31,7 +31,7 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 13. Aktuelle hochwertige Quality-Historie wird in profilspezifische Skill-/Rollen-Aggregate und konservative diagnostische Bias-Werte umgebaut. Ein separater Shadow-Vergleich wird gespeichert, während die reale Auswahl unverändert bleibt.
 14. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
 
-Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`. Ein Coding-Profil und ein Research-Profil beeinflussen sich nicht gegenseitig.
+Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`; Profile beeinflussen sich nicht gegenseitig. Snapshot-, Audit-, Learning- und Setup-Inventar-Umschläge tragen einen undurchsichtigen Scope-Token des kanonischen Profilverzeichnisses. Bei Klonen oder Umbenennen kopierter State wird deshalb vor Katalognutzung und OpenViking-Abgleich verworfen, ohne den Pfad offenzulegen.
 
 ## Kompatibilität
 
@@ -39,22 +39,35 @@ Die Plugin-APIs wurden gegen Hermes-Main-Commit `d3e2ace1dde9f1d279f99c9ebc6bce2
 
 ## Installation
 
-Nach der Veröffentlichung `OWNER` durch den GitHub-Benutzernamen oder die Organisation ersetzen:
+Das Plugin einmal im aktiven Profil installieren und anschließend den standardmäßig schreibgeschützten Setup-Plan ausführen:
 
 ```bash
-hermes plugins install OWNER/hermes-skill-router --enable
-hermes skill-router refresh --wait
+hermes plugins install MKI13/hermes-skill-router --enable
+hermes skill-router setup
 ```
 
-Für mehrere Profile:
+Hermes installiert und aktiviert Git-Plugins physisch pro Profil. Der Router folgt diesem nativen Modell: `setup --apply` ruft den offiziellen profilbezogenen Hermes-Installer und die Config-Befehle nacheinander auf. Dadurch muss der Benutzer die Installation nicht für jedes Profil manuell wiederholen.
+
+Dry-Run prüfen und anschließend anwenden:
 
 ```bash
-hermes --profile coding plugins install OWNER/hermes-skill-router --enable
-hermes --profile coding skill-router refresh --wait
-
-hermes --profile research plugins install OWNER/hermes-skill-router --enable
-hermes --profile research skill-router refresh --wait
+hermes skill-router setup --dry-run
+hermes skill-router setup --apply
+hermes skill-router profiles
 ```
+
+Die sicheren Anfangswerte sind `deterministic`, `warn`, `shadow` und deaktiviertes OpenViking. Bestehende Router-Einstellungen und absichtlich deaktivierte Installationen bleiben erhalten. Ein Canary-Rollout verwendet einen zur Laufzeit entdeckten Namen:
+
+```bash
+hermes skill-router setup --target-profile <profil>
+hermes skill-router setup --target-profile <profil> --apply
+```
+
+Der Router akzeptiert außerdem das angeforderte `--profile`. Aktuelle Hermes-Versionen lesen diese Schreibweise unabhängig von ihrer Position vorab als globalen Profilselektor. Deshalb muss bei Verwendung dieses Alias zuerst das aufrufende Profil angegeben werden: `hermes --profile <aufrufendes-profil> skill-router setup --profile <zielprofil> --apply`. `--target-profile` vermeidet diese Mehrdeutigkeit der Host-CLI.
+
+Nach Erstellen, Löschen oder Umbenennen von Profilen erkennt `hermes skill-router profiles --sync` neue und entfernte Namen. Dieser ausdrücklich angeforderte Sync ergänzt fehlendes sicheres Router-Setup über offizielle Hermes-Befehle und speichert im Inventar-State ausschließlich die erkannten Namen. Profile werden nicht gelöscht, explizite Werte nicht überschrieben, deaktivierte Installationen nicht aktiviert und Profil-States nicht zusammengeführt.
+
+Jedes Profil behält eigene Plugin-Konfiguration, sichtbare Skills, Readiness, Audits und Learning-Daten. Schlägt ein Profil fehl, bleiben erfolgreiche Profile bestehen und werden getrennt ausgewiesen.
 
 ## Lokales Planungsmodell konfigurieren
 
@@ -117,6 +130,11 @@ In einer Session:
 Im Terminal:
 
 ```bash
+hermes skill-router setup
+hermes skill-router setup --apply
+hermes skill-router setup --target-profile <profil> --apply
+hermes skill-router profiles
+hermes skill-router profiles --sync
 hermes skill-router status
 hermes skill-router refresh --wait
 hermes skill-router plan
@@ -196,7 +214,7 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: model             # model | deterministic
+        routing_mode: deterministic     # deterministic | model
         deep_refresh_on_start: true
         rescan_interval_seconds: 60
         max_skills_per_task: 4
@@ -213,7 +231,7 @@ plugins:
         analysis_model_timeout_seconds: 25
         routing_catalog_chars: 60000
         routing_model_timeout_seconds: 20
-        openviking_enabled: true
+        openviking_enabled: false
         openviking_url: http://127.0.0.1:1933
         openviking_timeout_seconds: 10
         openviking_retrieval_limit: 12

@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Routes every task to the best installed skills.
-version: 0.3.0
+version: 0.4.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -22,7 +22,8 @@ Use this skill when the user asks to:
 - test which skills would be selected for a sample task;
 - diagnose missing, stale, or unsuitable recommendations;
 - inspect or rebuild profile-local shadow-learning evidence;
-- configure the local auxiliary model used for routing.
+- configure the local auxiliary model used for routing;
+- discover Hermes profiles and plan or apply profile-adaptive Router setup.
 
 Do not load this operational skill merely because another skill was recommended. Follow the injected `[Skill Router]` block instead.
 
@@ -50,7 +51,7 @@ Use the plugin command inside a Hermes conversation:
 /skill-router recommend prepare a release and publish it on GitHub
 ```
 
-The router itself runs automatically before ordinary user requests. A manual command is unnecessary during normal work.
+The router itself runs automatically before ordinary user requests. A manual command is unnecessary during normal work. Fleet discovery and setup are terminal-only operations: use `hermes skill-router profiles`, `hermes skill-router setup`, and explicit `hermes skill-router setup --apply`.
 
 ## Quick Reference
 

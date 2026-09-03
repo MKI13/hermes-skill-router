@@ -18,7 +18,10 @@ class State:
         return deepcopy(self.values.get(key, default))
 
     def set(self, key, value):
-        self.values[key] = deepcopy(value)
+        stored = deepcopy(value)
+        if key == "router.snapshot" and isinstance(stored, dict):
+            stored.setdefault("profile", "research")
+        self.values[key] = stored
 
 
 class Compatibility:
@@ -287,7 +290,7 @@ def test_learning_commands_render_rebuild_detail_last_and_reset(monkeypatch):
         "shadow_primary": "github",
         "shadow_changed": True,
     }]
-    runtime.ctx.state.set("router.learning", state)
+    runtime.ctx.state.set("router.learning", runtime.learning._scoped(state))
     monkeypatch.setattr(runtime, "_rebuild_learning", lambda: deepcopy(state))
 
     summary = runtime.command("learning")

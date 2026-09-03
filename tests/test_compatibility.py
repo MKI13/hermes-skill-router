@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
-from skill_router_plugin.compat import HermesCompatibility
+from skill_router_plugin.compat import (
+    HermesCompatibility,
+    PluginInstallSpec,
+    ProfileDiscoveryError,
+)
 
 
 class FullCtx:
@@ -42,11 +47,14 @@ class Manager:
         return self.plugin_path
 
 
-def module_loader(*, skill_utils=None, plugins=None, skills_tool=None):
+def module_loader(*, skill_utils=None, plugins=None, skills_tool=None, profiles=None, constants=None, plugins_cmd=None):
     modules = {
         "agent.skill_utils": skill_utils,
         "hermes_cli.plugins": plugins,
         "tools.skills_tool": skills_tool or SimpleNamespace(),
+        "hermes_cli.profiles": profiles,
+        "hermes_constants": constants,
+        "hermes_cli.plugins_cmd": plugins_cmd,
     }
 
     def load(name):
@@ -69,6 +77,15 @@ def expected_skill_utils(**overrides):
     return SimpleNamespace(**values)
 
 
+def available_profiles():
+    return SimpleNamespace(
+        list_profile_names=lambda: ["default"],
+        profile_exists=lambda name: name == "default",
+        get_profile_dir=lambda name: "/profiles/" + name,
+        validate_profile_name=lambda name: None,
+    )
+
+
 def available_plugins(manager=None, valid_hooks=None):
     selected = manager or Manager()
     hooks = valid_hooks if valid_hooks is not None else {
@@ -88,7 +105,9 @@ def test_all_expected_hermes_apis_report_full_status():
         module_loader=module_loader(
             skill_utils=expected_skill_utils(),
             plugins=available_plugins(),
+            profiles=available_profiles(),
         ),
+        hermes_executable="hermes-test",
     )
 
     capabilities = compatibility.capabilities
@@ -108,6 +127,8 @@ def test_all_expected_hermes_apis_report_full_status():
         "Auxiliary tasks: available",
         "Skill execution audit: available",
         "Skill execution guard: available",
+        "Profile discovery: available",
+        "Profile configuration: available",
     ]
 
 
@@ -402,3 +423,238 @@ def test_full_reader_resolves_local_and_plugin_skills(tmp_path):
     assert mode == "raw-path-current-hermes"
     assert content["demo"].endswith("# Demo")
     assert content["plugin:workflow"] == "# Plugin skill"
+
+
+def test_custom_home_scope_hashes_the_active_home_not_a_synthetic_profile(tmp_path):
+    custom_home = tmp_path / "deployment"
+    ctx = FullCtx()
+    ctx.profile_name = "custom"
+    profiles = available_profiles()
+    profiles.get_profile_dir = lambda name: (_ for _ in ()).throw(AssertionError(name))
+    compatibility = HermesCompatibility(
+        ctx,
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=profiles,
+            constants=SimpleNamespace(get_hermes_home=lambda: custom_home),
+        ),
+        hermes_executable="hermes-test",
+    )
+
+    expected = hashlib.sha256(str(custom_home.resolve()).encode()).hexdigest()
+
+    assert compatibility.profile_scope_id() == f"home-v1:{expected}"
+
+
+def test_profile_discovery_fails_closed_when_one_profile_cannot_be_resolved(tmp_path):
+    def profile_dir(name):
+        if name == "broken":
+            raise OSError("unreadable")
+        return tmp_path / name
+
+    profiles = SimpleNamespace(
+        list_profile_names=lambda: ["beta", "alpha", "broken", "alpha"],
+        profile_exists=lambda name: True,
+        get_profile_dir=profile_dir,
+        validate_profile_name=lambda name: None,
+    )
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=profiles,
+        ),
+        hermes_executable="hermes-test",
+    )
+
+    try:
+        compatibility.discover_profiles()
+    except ProfileDiscoveryError:
+        pass
+    else:
+        raise AssertionError("profile discovery should fail closed")
+
+    assert compatibility.capabilities.profile_discovery is False
+    assert compatibility.capabilities.profile_configuration is False
+    assert any("profile broken" in issue for issue in compatibility.capabilities.issues)
+
+
+def test_profile_discovery_returns_sorted_name_only_records(tmp_path):
+    profiles = SimpleNamespace(
+        list_profile_names=lambda: ["beta", "alpha", "alpha"],
+        profile_exists=lambda name: True,
+        get_profile_dir=lambda name: tmp_path / name,
+        validate_profile_name=lambda name: None,
+    )
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=profiles,
+        ),
+        hermes_executable="hermes-test",
+    )
+
+    discovered = compatibility.discover_profiles()
+
+    assert [profile.name for profile in discovered] == ["alpha", "beta"]
+    assert all(not hasattr(profile, "path") for profile in discovered)
+
+
+def test_missing_profile_api_reports_clean_degraded_capabilities():
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+
+    assert compatibility.capabilities.profile_discovery is False
+    assert compatibility.capabilities.profile_configuration is False
+    assert "Profile discovery: degraded" in compatibility.status_lines()
+    assert "Profile configuration: degraded" in compatibility.status_lines()
+    assert compatibility.discover_profiles() == []
+
+
+def test_profile_inspection_uses_only_public_hermes_cli_metadata():
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        tail = argv[3:]
+        if tail[:2] == ["plugins", "list"]:
+            stdout = '[{"name":"skill-router","status":"enabled","version":"0.4.0","source":"git"}]'
+        elif tail[:2] == ["config", "get"]:
+            stdout = "deterministic\n" if tail[-1].endswith("routing_mode") else ""
+            if not stdout:
+                return SimpleNamespace(returncode=1, stdout="", stderr="SECRET")
+        elif tail == ["skill-router", "status"]:
+            stdout = (
+                "Indexed skills: 7\nRouting mode: deterministic\n"
+                "Enforcement mode: warn\nLearning: shadow\n"
+                "OpenViking enabled/synced: False / 0\n"
+            )
+        else:
+            raise AssertionError(tail)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="SECRET")
+
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=available_profiles(),
+        ),
+        command_runner=runner,
+        hermes_executable="hermes-test",
+    )
+
+    inspection = compatibility.inspect_profile("default")
+
+    assert inspection.installed is True
+    assert inspection.enabled is True
+    assert inspection.version == "0.4.0"
+    assert inspection.skill_count == 7
+    assert inspection.routing_mode == "deterministic"
+    assert inspection.enforcement_mode == "warn"
+    assert inspection.learning_mode == "shadow"
+    assert inspection.openviking_enabled is False
+    assert inspection.setting("routing_mode") == "deterministic"
+    assert inspection.setting("learning_mode") is None
+    assert all(call[0][:3] == ["hermes-test", "--profile", "default"] for call in calls)
+    assert "SECRET" not in repr(inspection)
+
+
+def test_install_spec_accepts_local_source_and_rejects_credentialed_url(tmp_path):
+    revision = "0123456789abcdef0123456789abcdef01234567"
+    metadata = {"skill-router": {"source": tmp_path.as_uri(), "revision": revision}}
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=available_profiles(),
+            plugins_cmd=SimpleNamespace(_read_install_metadata=lambda: metadata),
+        ),
+        hermes_executable="hermes-test",
+    )
+
+    assert compatibility.current_plugin_install_spec() == PluginInstallSpec(tmp_path.as_uri(), revision)
+
+    metadata["skill-router"]["source"] = "https://user:SECRET@github.com/MKI13/hermes-skill-router.git"
+    spec = compatibility.current_plugin_install_spec()
+
+    assert spec.source == ""
+    assert "SECRET" not in repr(spec)
+
+
+def test_not_enabled_plugin_is_installed_and_intentionally_inactive():
+    def runner(argv, **kwargs):
+        tail = argv[3:]
+        if tail[:2] == ["plugins", "list"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='[{"name":"skill-router","status":"not enabled","version":"0.4.0"}]',
+            )
+        if tail[:2] == ["config", "get"]:
+            return SimpleNamespace(returncode=1, stdout="")
+        raise AssertionError(tail)
+
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=available_profiles(),
+        ),
+        command_runner=runner,
+        hermes_executable="hermes-test",
+    )
+
+    inspection = compatibility.inspect_profile("default")
+
+    assert inspection.installed is True
+    assert inspection.enabled is False
+    assert inspection.version == "0.4.0"
+
+
+def test_legacy_plugin_config_counts_as_explicit_when_canonical_key_is_absent():
+    calls = []
+
+    def runner(argv, **kwargs):
+        tail = argv[3:]
+        calls.append(tail)
+        if tail[:2] == ["plugins", "list"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='[{"name":"skill-router","status":"not enabled","version":"0.3.0"}]',
+            )
+        if tail[:2] == ["config", "get"]:
+            key = tail[-1]
+            if key.endswith("config.routing_mode"):
+                return SimpleNamespace(returncode=0, stdout="model\n")
+            return SimpleNamespace(returncode=1, stdout="")
+        raise AssertionError(tail)
+
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            profiles=available_profiles(),
+        ),
+        command_runner=runner,
+        hermes_executable="hermes-test",
+    )
+
+    inspection = compatibility.inspect_profile("default")
+
+    assert inspection.setting("routing_mode") == "model"
+    canonical = "plugins.entries.skill-router.settings.routing_mode"
+    legacy = "plugins.entries.skill-router.config.routing_mode"
+    assert ["config", "get", canonical] in calls
+    assert ["config", "get", legacy] in calls

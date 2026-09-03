@@ -6,6 +6,7 @@ import math
 import threading
 from typing import Any
 
+from .profile_identity import ProfileIdentity
 from .quality import QUALITY_VERSION, normalize_quality
 
 LEARNING_VERSION = 1
@@ -29,8 +30,12 @@ _ROLES = ("primary", "supporting", "dependency")
 class ShadowLearning:
     """Rebuild and expose technical learning aggregates for one profile state."""
 
-    def __init__(self, ctx: Any) -> None:
+    def __init__(self, ctx: Any, profile: ProfileIdentity | None = None) -> None:
         self.ctx = ctx
+        if profile is None:
+            name = str(getattr(ctx, "profile_name", "custom") or "custom")[:100]
+            profile = ProfileIdentity(name=name, scope_token=f"legacy-test:{name}")
+        self.profile = profile
         self._lock = threading.RLock()
         self._generation = 0
         self._last_write_succeeded = True
@@ -51,8 +56,10 @@ class ShadowLearning:
             with self._lock:
                 if generation != self._generation:
                     value = self.ctx.state.get(LEARNING_STATE_KEY, None)
+                    if not self._scope_matches(value):
+                        return empty_learning_state(min_samples)
                     return normalize_learning_state(value, min_samples=min_samples)
-                self.ctx.state.set(LEARNING_STATE_KEY, state)
+                self.ctx.state.set(LEARNING_STATE_KEY, self._scoped(state))
                 self._last_write_succeeded = True
         except Exception:
             with self._lock:
@@ -67,6 +74,8 @@ class ShadowLearning:
                 value = self.ctx.state.get(LEARNING_STATE_KEY, None)
         except Exception:
             return empty_learning_state(min_samples)
+        if not self._scope_matches(value):
+            return empty_learning_state(min_samples)
         return normalize_learning_state(value, min_samples=min_samples)
 
     def reset(self, min_samples: int) -> dict[str, Any]:
@@ -75,12 +84,22 @@ class ShadowLearning:
         try:
             with self._lock:
                 self._generation += 1
-                self.ctx.state.set(LEARNING_STATE_KEY, state)
+                self.ctx.state.set(LEARNING_STATE_KEY, self._scoped(state))
                 self._last_write_succeeded = True
         except Exception:
             with self._lock:
                 self._last_write_succeeded = False
         return state
+
+    def _scoped(self, state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **state,
+            "profile": self.profile.name,
+            "profile_scope": self.profile.scope_token,
+        }
+
+    def _scope_matches(self, state: Any) -> bool:
+        return isinstance(state, dict) and state.get("profile_scope") == self.profile.scope_token
 
     def write_succeeded(self) -> bool:
         """Report whether the latest attempted state write completed."""
