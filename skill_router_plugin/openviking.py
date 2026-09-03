@@ -61,8 +61,13 @@ class OpenVikingBridge:
             if entry is None:
                 continue
             ov_name = str(entry.get("openviking_name") or self._mirror_name(record["name"]))
-            current_owned.add(ov_name)
             entry["openviking_name"] = ov_name
+            owned_before = ov_name in set(previous_owned or ())
+            if ov_name in existing and not owned_before:
+                failed.append(f"{record['name']}: mirror-name-conflict")
+                continue
+            if owned_before:
+                current_owned.add(ov_name)
             if entry.get("openviking_hash") == record.get("content_hash") and ov_name in existing:
                 continue
             mirrored = self._mirror_skill(record, ov_name)
@@ -71,18 +76,14 @@ class OpenVikingBridge:
                 if ov_name in existing:
                     self._request("PUT", path, {"data": mirrored, "wait": False}, timeout=min(self._timeout(), 10.0))
                 else:
-                    try:
-                        self._request(
-                            "POST",
-                            "/api/v1/skills",
-                            {"data": mirrored, "wait": False},
-                            timeout=min(self._timeout(), 10.0),
-                        )
-                    except RuntimeError as exc:
-                        if "HTTP 409" not in str(exc):
-                            raise
-                        self._request("PUT", path, {"data": mirrored, "wait": False}, timeout=min(self._timeout(), 10.0))
+                    self._request(
+                        "POST",
+                        "/api/v1/skills",
+                        {"data": mirrored, "wait": False},
+                        timeout=min(self._timeout(), 10.0),
+                    )
                     existing.add(ov_name)
+                    current_owned.add(ov_name)
                 entry["openviking_hash"] = record.get("content_hash")
                 synced += 1
             except Exception as exc:

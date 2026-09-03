@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 import hashlib
 from types import SimpleNamespace
 
@@ -47,7 +48,7 @@ class Manager:
         return self.plugin_path
 
 
-def module_loader(*, skill_utils=None, plugins=None, skills_tool=None, profiles=None, constants=None, plugins_cmd=None):
+def module_loader(*, skill_utils=None, plugins=None, skills_tool=None, profiles=None, constants=None, plugins_cmd=None, config=None):
     modules = {
         "agent.skill_utils": skill_utils,
         "hermes_cli.plugins": plugins,
@@ -55,6 +56,7 @@ def module_loader(*, skill_utils=None, plugins=None, skills_tool=None, profiles=
         "hermes_cli.profiles": profiles,
         "hermes_constants": constants,
         "hermes_cli.plugins_cmd": plugins_cmd,
+        "hermes_cli.config": config,
     }
 
     def load(name):
@@ -106,6 +108,7 @@ def test_all_expected_hermes_apis_report_full_status():
             skill_utils=expected_skill_utils(),
             plugins=available_plugins(),
             profiles=available_profiles(),
+            config=SimpleNamespace(load_config_readonly=lambda: {}),
         ),
         hermes_executable="hermes-test",
     )
@@ -119,6 +122,7 @@ def test_all_expected_hermes_apis_report_full_status():
     assert capabilities.auxiliary_tasks is True
     assert capabilities.skill_execution_audit is True
     assert capabilities.skill_execution_guard is True
+    assert capabilities.mcp_discovery is True
     assert compatibility.status_lines() == [
         "Hermes compatibility: full",
         "Raw skill reader: available",
@@ -129,7 +133,110 @@ def test_all_expected_hermes_apis_report_full_status():
         "Skill execution guard: available",
         "Profile discovery: available",
         "Profile configuration: available",
+        "Native MCP config discovery: available",
     ]
+
+
+def test_mcp_readiness_uses_exact_profile_config_identities_without_credentials():
+    secret = "must-not-escape"
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            config=SimpleNamespace(load_config_readonly=lambda: {
+                "mcp_servers": {
+                    "codebase-memory": {"command": "memory", "env": {"TOKEN": secret}},
+                    "disabled-server": {"url": "https://example.invalid", "enabled": "off"},
+                    "integer-disabled": {"command": "disabled", "enabled": 0},
+                    "invalid-server": {"enabled": True},
+                    "preset-only": {"preset": "github", "enabled": True},
+                },
+            }),
+        ),
+    )
+
+    readiness = compatibility.active_mcp_readiness()
+
+    assert readiness == {
+        "codebase-memory": True,
+        "disabled-server": False,
+        "integer-disabled": False,
+        "invalid-server": None,
+        "preset-only": None,
+    }
+    assert secret not in repr(readiness)
+
+
+def test_mcp_readiness_fails_unknown_when_config_api_or_config_is_unavailable():
+    unavailable = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+        ),
+    )
+    failing = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            config=SimpleNamespace(load_config_readonly=lambda: (_ for _ in ()).throw(OSError())),
+        ),
+    )
+
+    assert unavailable.active_mcp_readiness() is None
+    assert unavailable.capabilities.mcp_discovery is False
+    assert failing.active_mcp_readiness() is None
+    assert failing.capabilities.mcp_discovery is True
+
+
+def test_mcp_readiness_is_reloaded_from_each_active_profile_context():
+    active_profile = ContextVar("active_mcp_profile", default="profile-a")
+    configs = {
+        "profile-a": {"mcp_servers": {"codebase-memory": {"command": "memory"}}},
+        "profile-b": {"mcp_servers": {}},
+    }
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            config=SimpleNamespace(
+                load_config_readonly=lambda: configs[active_profile.get()]
+            ),
+        ),
+    )
+
+    assert compatibility.active_mcp_readiness() == {"codebase-memory": True}
+    token = active_profile.set("profile-b")
+    try:
+        assert compatibility.active_mcp_readiness() == {}
+    finally:
+        active_profile.reset(token)
+    assert compatibility.active_mcp_readiness() == {"codebase-memory": True}
+
+
+def test_mcp_readiness_recovers_after_transient_config_read_failure():
+    calls = {"count": 0}
+
+    def read_config():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError()
+        return {"mcp_servers": {"memory": {"command": "memory"}}}
+
+    compatibility = HermesCompatibility(
+        FullCtx(),
+        module_loader=module_loader(
+            skill_utils=expected_skill_utils(),
+            plugins=available_plugins(),
+            config=SimpleNamespace(load_config_readonly=read_config),
+        ),
+    )
+
+    assert compatibility.active_mcp_readiness() is None
+    assert compatibility.active_mcp_readiness() == {"memory": True}
 
 
 def test_readiness_hints_normalize_passive_hermes_metadata():

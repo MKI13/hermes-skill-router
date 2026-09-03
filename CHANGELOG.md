@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- Added automatic, coalesced catalog updates for Hermes skill lifecycle events with cache-settled and interval-gated fingerprint fallbacks.
+- Added a bounded, profile-scoped technical skill-event history plus `/skill-router events` and compact pending/last-change status.
+- Added passive `requirements.mcps` readiness through compatibility-wrapped active-profile Hermes configuration discovery without starting or routing MCP tools.
+- Preserved authoritative catalogs and Router-owned OpenViking mirrors during transient skill-discovery failures, while removing successfully observed deleted skills.
+- Added Hermes-first `after-install.md` guidance and clearer setup summaries without automatic apply.
+
 ## 0.4.0
 
 - Added compatibility-wrapped discovery of all live Hermes profiles and metadata-only `profiles` reporting.

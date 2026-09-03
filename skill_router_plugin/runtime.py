@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import copy_context
 from datetime import datetime, timezone
 import json
 import logging
@@ -14,6 +15,7 @@ from .audit import SkillExecutionAudit
 from .catalog import base_plan_entry, scan_catalog
 from .compat import HermesCompatibility
 from .enforcement import SkillExecutionGuard
+from .events import SkillRouterEvents
 from .learning import (
     ShadowLearning,
     compare_shadow_ranking,
@@ -70,12 +72,22 @@ class SkillRouterRuntime:
         self.profile = resolve_profile_identity(ctx, self.compatibility)
         self.openviking = OpenVikingBridge(ctx, self.profile)
         self.audit = SkillExecutionAudit(ctx, self.profile)
+        self.events = SkillRouterEvents(ctx, self.profile)
         self.learning = ShadowLearning(ctx, self.profile)
         self.guard = SkillExecutionGuard()
         self._lock = threading.RLock()
+        self._scan_lock = threading.Lock()
+        self._deep_lock = threading.Lock()
+        self._openviking_lock = threading.Lock()
         self._stop = threading.Event()
+        self._worker_wake = threading.Event()
         self._worker: threading.Thread | None = None
         self._pending_reason = ""
+        self._lifecycle_settle_requested = False
+        self._lifecycle_settle_reason = ""
+        self._lifecycle_settle_waiting = False
+        self._catalog_pending_refresh = False
+        self._catalog_generation = 0
         self._last_scan_monotonic = 0.0
         self._invalid_enforcement_mode_reported = False
         self._invalid_learning_mode_reported = False
@@ -83,6 +95,7 @@ class SkillRouterRuntime:
     def stop(self) -> None:
         """Stop and join the owned refresh worker before plugin unload completes."""
         self._stop.set()
+        self._worker_wake.set()
         with self._lock:
             worker = self._worker
         if worker is not None and worker is not threading.current_thread():
@@ -298,51 +311,122 @@ class SkillRouterRuntime:
 
     def ensure_catalog(self, *, force: bool) -> bool:
         """Refresh the base plan when the scan interval or force flag requires it."""
+        refreshed = self._refresh_catalog(force=force)
+        return bool(refreshed and refreshed[0])
+
+    def _refresh_catalog(
+        self,
+        *,
+        force: bool,
+    ) -> tuple[bool, dict[str, Any], dict[str, Any], int] | None:
+        """Scan once and publish one authoritative catalog generation."""
         interval = self._int_setting("rescan_interval_seconds", 60, minimum=0, maximum=86400)
         now = time.monotonic()
-        with self._lock:
-            if not force and now - self._last_scan_monotonic < interval:
-                return False
-            self._last_scan_monotonic = now
+        with self._scan_lock:
+            with self._lock:
+                if (
+                    not force
+                    and self._last_scan_monotonic > 0.0
+                    and now - self._last_scan_monotonic < interval
+                ):
+                    return None
+            try:
+                catalog = scan_catalog(self.ctx, self.compatibility)
+            except Exception:
+                with self._lock:
+                    self._catalog_pending_refresh = True
+                self.events.record("skill_refresh_failed", result="failed")
+                raise
+            if catalog.get("listing_available", True) is not True:
+                with self._lock:
+                    self._catalog_pending_refresh = True
+                self.events.record("skill_refresh_failed", result="unavailable")
+                return None
 
-        catalog = scan_catalog(self.ctx, self.compatibility)
-        snapshot = self._snapshot()
-        if not force and catalog["catalog_hash"] == snapshot.get("catalog_hash"):
-            return False
+            with self._lock:
+                snapshot = self._snapshot()
+                changed = catalog.get("catalog_hash") != snapshot.get("catalog_hash")
+                self._last_scan_monotonic = time.monotonic()
+                self._catalog_pending_refresh = False
+                if not changed:
+                    current_snapshot = {
+                        **snapshot,
+                        "catalog_scanned_at": _utc_now(),
+                        "reader_mode": catalog.get("reader_mode", "unknown"),
+                    }
+                    self._save_snapshot(current_snapshot)
+                    return False, catalog, current_snapshot, self._catalog_generation
 
-        previous = {
-            str(entry.get("name")): entry
-            for entry in snapshot.get("entries", [])
-            if isinstance(entry, dict) and entry.get("name")
+                previous = {
+                    str(entry.get("name")): entry
+                    for entry in snapshot.get("entries", [])
+                    if isinstance(entry, dict) and entry.get("name")
+                }
+                entries: list[dict[str, Any]] = []
+                for record in catalog.get("skills", []):
+                    existing = previous.get(record["name"])
+                    if existing and existing.get("content_hash") == record.get("content_hash"):
+                        entries.append({
+                            **existing,
+                            "readiness_status": record.get("readiness_status", UNKNOWN),
+                            "readiness_hash": record.get("readiness_hash", ""),
+                            "setup_needed": bool(record.get("setup_needed")),
+                            "requirements": record.get("requirements", {}),
+                            "dependency_checks": record.get("dependency_checks", []),
+                            "readiness_reasons": record.get("readiness_reasons", []),
+                            "policy_metadata_complete": True,
+                        })
+                    else:
+                        entries.append(base_plan_entry(record))
+                new_snapshot = {
+                    **snapshot,
+                    "profile": self.profile.name,
+                    "profile_scope": self.profile.scope_token,
+                    "catalog_hash": catalog.get("catalog_hash", ""),
+                    "catalog_scanned_at": _utc_now(),
+                    "reader_mode": catalog.get("reader_mode", "unknown"),
+                    "entries": entries,
+                    "dirty": True,
+                }
+                self._save_snapshot(new_snapshot)
+                self._catalog_generation += 1
+                generation = self._catalog_generation
+
+            self._record_catalog_deltas(previous, catalog.get("skills", []))
+            return True, catalog, new_snapshot, generation
+
+    def _record_catalog_deltas(
+        self,
+        previous: dict[str, dict[str, Any]],
+        records: list[dict[str, Any]],
+    ) -> None:
+        current = {
+            str(record.get("name")): record
+            for record in records
+            if isinstance(record, dict) and record.get("name")
         }
-        entries: list[dict[str, Any]] = []
-        for record in catalog["skills"]:
-            existing = previous.get(record["name"])
-            if existing and existing.get("content_hash") == record["content_hash"]:
-                entries.append({
-                    **existing,
-                    "readiness_status": record.get("readiness_status", "unknown"),
-                    "readiness_hash": record.get("readiness_hash", ""),
-                    "setup_needed": bool(record.get("setup_needed")),
-                    "requirements": record.get("requirements", {}),
-                    "dependency_checks": record.get("dependency_checks", []),
-                    "readiness_reasons": record.get("readiness_reasons", []),
-                    "policy_metadata_complete": True,
-                })
-            else:
-                entries.append(base_plan_entry(record))
-        new_snapshot = {
-            **snapshot,
-            "profile": self.profile.name,
-            "profile_scope": self.profile.scope_token,
-            "catalog_hash": catalog["catalog_hash"],
-            "catalog_scanned_at": _utc_now(),
-            "reader_mode": catalog.get("reader_mode", "unknown"),
-            "entries": entries,
-            "dirty": True,
-        }
-        self._save_snapshot(new_snapshot)
-        return True
+        for name in sorted(current, key=str.casefold):
+            record = current[name]
+            old = previous.get(name)
+            readiness = str(record.get("readiness_status") or UNKNOWN)
+            if old is None:
+                self.events.record(
+                    "skill_detected", skill_name=name, result="added", readiness=readiness
+                )
+            elif (
+                old.get("content_hash") != record.get("content_hash")
+                or old.get("readiness_hash") != record.get("readiness_hash")
+            ):
+                self.events.record(
+                    "skill_updated", skill_name=name, result="changed", readiness=readiness
+                )
+        for name in sorted(set(previous) - set(current), key=str.casefold):
+            self.events.record(
+                "skill_removed",
+                skill_name=name,
+                result="removed",
+                readiness=str(previous[name].get("readiness_status") or UNKNOWN),
+            )
 
     def request_deep_refresh(self, reason: str) -> bool:
         """Start one coalescing background refresh worker."""
@@ -352,10 +436,17 @@ class SkillRouterRuntime:
             if self._stop.is_set():
                 return False
             self._pending_reason = reason
+            self._catalog_pending_refresh = True
+            if reason.startswith("lifecycle:"):
+                self._lifecycle_settle_requested = True
+                self._lifecycle_settle_reason = reason
+            self._worker_wake.set()
             if self._worker is not None and self._worker.is_alive():
                 return False
+            worker_context = copy_context()
             self._worker = threading.Thread(
-                target=self._deep_worker,
+                target=worker_context.run,
+                args=(self._deep_worker,),
                 name="hermes-skill-router-refresh",
                 daemon=True,
             )
@@ -364,12 +455,20 @@ class SkillRouterRuntime:
 
     def deep_refresh(self, reason: str = "manual") -> dict[str, Any]:
         """Synchronously rebuild changed model-derived plan entries."""
-        self.ensure_catalog(force=True)
-        catalog = scan_catalog(self.ctx, self.compatibility)
-        snapshot = self._snapshot()
-        if catalog.get("catalog_hash") != snapshot.get("catalog_hash"):
-            self.ensure_catalog(force=True)
-            snapshot = self._snapshot()
+        with self._deep_lock:
+            return self._deep_refresh_once(reason)
+
+    def _deep_refresh_once(self, reason: str) -> dict[str, Any]:
+        refreshed = self._refresh_catalog(force=True)
+        if refreshed is None:
+            return {
+                "changed": 0,
+                "calls": 0,
+                "failures": ["catalog-unavailable"],
+                "saved": False,
+                "reason": "catalog-unavailable",
+            }
+        _catalog_changed, catalog, snapshot, generation = refreshed
         entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
         if self._routing_mode() == "deterministic":
             analyzed = entries
@@ -386,45 +485,74 @@ class SkillRouterRuntime:
             )
         if self._stop.is_set():
             return {**report, "saved": False, "reason": "plugin-unloaded"}
+        with self._openviking_lock:
+            if not self._catalog_is_current(generation, catalog):
+                self.request_deep_refresh("catalog-changed-during-analysis")
+                return {**report, "saved": False, "reason": "catalog-changed"}
+            try:
+                openviking_report = self.openviking.sync_skills(
+                    catalog.get("skills", []),
+                    analyzed,
+                    previous_owned=set(snapshot.get("openviking_owned_names", [])),
+                    should_stop=self._stop.is_set,
+                )
+                openviking_plan_written = False if self._stop.is_set() else self.openviking.write_plan(
+                    _plan_markdown(self.profile.name, analyzed)
+                )
+            except Exception as exc:
+                openviking_report = {"enabled": True, "synced": 0, "failed": [str(exc)]}
+                openviking_plan_written = False
+            openviking_summary = {
+                key: value for key, value in openviking_report.items() if key != "owned_names"
+            }
+            report = {
+                **report,
+                "openviking": openviking_summary,
+                "openviking_plan_written": openviking_plan_written,
+            }
+            if self._stop.is_set():
+                return {**report, "saved": False, "reason": "plugin-unloaded"}
+            with self._lock:
+                if not self._catalog_is_current(generation, catalog):
+                    self._retain_openviking_ownership(openviking_report)
+                    self.request_deep_refresh("catalog-changed-during-sync")
+                    return {**report, "saved": False, "reason": "catalog-changed"}
+                current = self._snapshot()
+                current.update({
+                    "entries": analyzed,
+                    "deep_analyzed_at": _utc_now(),
+                    "deep_reason": reason,
+                    "dirty": bool(report.get("failures")),
+                    "last_report": report,
+                })
+                owned_names = openviking_report.get("owned_names")
+                if openviking_report.get("enabled") and isinstance(owned_names, list):
+                    current["openviking_owned_names"] = owned_names
+                self._save_snapshot(current)
+                self._catalog_pending_refresh = False
+            return {**report, "saved": True, "reason": reason}
+
+    def _retain_openviking_ownership(self, report: dict[str, Any]) -> None:
+        """Retain ownership of mirrors created before a stale sync was rejected."""
+        owned_names = report.get("owned_names")
+        if not report.get("enabled") or not isinstance(owned_names, list):
+            return
         current = self._snapshot()
-        if current.get("catalog_hash") != snapshot.get("catalog_hash"):
-            self.request_deep_refresh("catalog-changed-during-analysis")
-            return {**report, "saved": False, "reason": "catalog-changed"}
-        try:
-            openviking_report = self.openviking.sync_skills(
-                catalog.get("skills", []),
-                analyzed,
-                previous_owned=set(snapshot.get("openviking_owned_names", [])),
-                should_stop=self._stop.is_set,
-            )
-            openviking_plan_written = False if self._stop.is_set() else self.openviking.write_plan(
-                _plan_markdown(self.profile.name, analyzed)
-            )
-        except Exception as exc:
-            openviking_report = {"enabled": True, "synced": 0, "failed": [str(exc)]}
-            openviking_plan_written = False
-        openviking_owned_names = openviking_report.get("owned_names", [])
-        openviking_summary = {
-            key: value for key, value in openviking_report.items() if key != "owned_names"
+        retained = {
+            str(name)
+            for name in current.get("openviking_owned_names", [])
+            if isinstance(name, str) and name
         }
-        report = {
-            **report,
-            "openviking": openviking_summary,
-            "openviking_plan_written": openviking_plan_written,
-        }
-        if self._stop.is_set():
-            return {**report, "saved": False, "reason": "plugin-unloaded"}
-        current.update({
-            "entries": analyzed,
-            "deep_analyzed_at": _utc_now(),
-            "deep_reason": reason,
-            "dirty": bool(report.get("failures")),
-            "last_report": report,
-        })
-        if openviking_report.get("enabled"):
-            current["openviking_owned_names"] = openviking_owned_names
+        retained.update(str(name) for name in owned_names if isinstance(name, str) and name)
+        current["openviking_owned_names"] = sorted(retained)
         self._save_snapshot(current)
-        return {**report, "saved": True, "reason": reason}
+
+    def _catalog_is_current(self, generation: int, catalog: dict[str, Any]) -> bool:
+        with self._lock:
+            return (
+                generation == self._catalog_generation
+                and self._snapshot().get("catalog_hash") == catalog.get("catalog_hash")
+            )
 
     def command(self, raw_args: str) -> str:
         """Handle `/skill-router` commands."""
@@ -435,6 +563,19 @@ class SkillRouterRuntime:
         action = args[0].casefold() if args else "status"
         if action == "status":
             return self.status_text()
+        if action == "events":
+            detail = args[1].casefold() if len(args) > 1 else ""
+            if len(args) > 2:
+                return "Usage: /skill-router events [1-50]"
+            if not detail:
+                return self.events.render()
+            try:
+                limit = int(detail)
+            except ValueError:
+                return "Usage: /skill-router events [1-50]"
+            if limit < 1 or limit > 50:
+                return "Usage: /skill-router events [1-50]"
+            return self.events.render(limit)
         if action == "enforcement":
             return self.enforcement_text()
         if action == "learning":
@@ -601,7 +742,7 @@ class SkillRouterRuntime:
             return "\n".join(lines)
         return (
             "Usage: /skill-router "
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
+            "[status|refresh|plan|inspect <skill>|events [1-50]|audit [last|N]|quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
         )
 
     def status_text(self) -> str:
@@ -609,7 +750,37 @@ class SkillRouterRuntime:
         snapshot = self._snapshot()
         report = snapshot.get("last_report") if isinstance(snapshot.get("last_report"), dict) else {}
         ov_report = report.get("openviking") if isinstance(report.get("openviking"), dict) else {}
-        running = bool(self._worker and self._worker.is_alive())
+        with self._lock:
+            running = bool(self._worker and self._worker.is_alive())
+            pending = bool(
+                self._catalog_pending_refresh
+                or self._pending_reason
+                or self._lifecycle_settle_requested
+                or self._lifecycle_settle_waiting
+                or running
+                or snapshot.get("dirty")
+            )
+        recent_events = self.events.recent(50)
+        last_change = next(
+            (
+                item
+                for item in reversed(recent_events)
+                if item.get("event") in {"skill_detected", "skill_updated", "skill_removed"}
+            ),
+            None,
+        )
+        if last_change is None:
+            last_change_text = "never"
+        else:
+            event_label = {
+                "skill_detected": "detected",
+                "skill_updated": "updated",
+                "skill_removed": "removed",
+            }[last_change["event"]]
+            last_change_text = (
+                f"{last_change.get('skill_name') or 'unknown'} {event_label} "
+                f"at {last_change.get('timestamp') or 'unknown'}"
+            )
         entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
         readiness_counts = {status: 0 for status in READINESS_STATUSES}
         for entry in entries:
@@ -656,6 +827,8 @@ class SkillRouterRuntime:
             *readiness_lines,
             f"Catalog hash: {str(snapshot.get('catalog_hash') or 'none')[:12]}",
             f"Catalog scan: {snapshot.get('catalog_scanned_at') or 'never'}",
+            f"Last skill change: {last_change_text}",
+            f"Catalog pending refresh: {'yes' if pending else 'no'}",
             f"Skill reader: {snapshot.get('reader_mode') or 'unknown'}",
             f"Deep analysis: {snapshot.get('deep_analyzed_at') or 'never'}",
             f"Routing mode: {self._routing_mode()}",
@@ -738,7 +911,13 @@ class SkillRouterRuntime:
                     continue
                 kind = str(check.get("type") or "dependency").replace("_", " ")
                 name = str(check.get("name") or "unknown")[:200]
-                availability = "available" if check.get("available") else "missing"
+                raw_availability = check.get("available")
+                if raw_availability is True:
+                    availability = "available"
+                elif raw_availability is False:
+                    availability = "missing"
+                else:
+                    availability = "unknown"
                 lines.append(f"{kind} {name}: {availability}")
         else:
             lines.append("none declared")
@@ -764,29 +943,59 @@ class SkillRouterRuntime:
 
     def _deep_worker(self) -> None:
         current = threading.current_thread()
+        settle_deadline: float | None = None
+        settle_reason = "lifecycle"
         try:
             while not self._stop.is_set():
                 with self._lock:
-                    reason = self._pending_reason or "background"
+                    reason = self._pending_reason
                     self._pending_reason = ""
-                started = time.monotonic()
-                try:
-                    self.deep_refresh(reason)
-                    if reason.startswith("lifecycle:"):
-                        remaining = _HERMES_SKILL_CACHE_SETTLE_SECONDS - (time.monotonic() - started)
-                        if remaining > 0 and self._stop.wait(remaining):
+                    if self._lifecycle_settle_requested:
+                        self._lifecycle_settle_requested = False
+                        settle_deadline = time.monotonic() + _HERMES_SKILL_CACHE_SETTLE_SECONDS
+                        settle_reason = self._lifecycle_settle_reason or settle_reason
+                        self._lifecycle_settle_reason = ""
+                if reason:
+                    try:
+                        self.deep_refresh(reason)
+                    except Exception:
+                        logger.warning("Skill Router deep refresh failed", exc_info=True)
+                    continue
+
+                if settle_deadline is not None:
+                    remaining = max(0.0, settle_deadline - time.monotonic())
+                    with self._lock:
+                        if self._pending_reason or self._lifecycle_settle_requested:
+                            continue
+                        self._lifecycle_settle_waiting = True
+                        self._worker_wake.clear()
+                        if self._stop.is_set():
+                            self._lifecycle_settle_waiting = False
                             return
-                        self.deep_refresh(f"{reason}:cache-settled")
-                except Exception:
-                    logger.warning("Skill Router deep refresh failed", exc_info=True)
+                    woke = self._worker_wake.wait(remaining)
+                    with self._lock:
+                        self._lifecycle_settle_waiting = False
+                        pending = bool(self._pending_reason or self._lifecycle_settle_requested)
+                    if self._stop.is_set():
+                        return
+                    if woke or pending:
+                        continue
+                    try:
+                        self.deep_refresh(f"{settle_reason}:cache-settled")
+                    except Exception:
+                        logger.warning("Skill Router cache-settled refresh failed", exc_info=True)
+                    settle_deadline = None
+                    continue
+
                 with self._lock:
-                    if self._pending_reason:
+                    if self._pending_reason or self._lifecycle_settle_requested:
                         continue
                     if self._worker is current:
                         self._worker = None
                     return
         finally:
             with self._lock:
+                self._lifecycle_settle_waiting = False
                 if self._worker is current:
                     self._worker = None
                 restart_reason = self._pending_reason if not self._stop.is_set() else ""

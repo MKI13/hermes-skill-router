@@ -91,6 +91,7 @@ class CompatibilityCapabilities:
     skill_execution_guard: bool
     profile_discovery: bool
     profile_configuration: bool
+    mcp_discovery: bool
     issues: tuple[str, ...]
 
     @property
@@ -105,6 +106,7 @@ class CompatibilityCapabilities:
             self.skill_execution_guard,
             self.profile_discovery,
             self.profile_configuration,
+            self.mcp_discovery,
         )
         return "full" if all(required) else "degraded"
 
@@ -139,6 +141,7 @@ class HermesCompatibility:
         self._profile_functions: dict[str, Callable[..., Any]] = {}
         self._install_metadata_reader: Callable[[], Any] | None = None
         self._active_home: Callable[[], Any] | None = None
+        self._mcp_config_reader: Callable[[], Any] | None = None
         self._detect_internal_apis()
         self._detect_profile_apis()
 
@@ -155,6 +158,7 @@ class HermesCompatibility:
             skill_execution_guard=self._skill_execution_guard,
             profile_discovery=self._profile_discovery,
             profile_configuration=self._profile_configuration,
+            mcp_discovery=self._mcp_config_reader is not None,
             issues=tuple(self._issues),
         )
 
@@ -169,6 +173,7 @@ class HermesCompatibility:
         guard = "available" if capabilities.skill_execution_guard else "unavailable"
         discovery = "available" if capabilities.profile_discovery else "degraded"
         configuration = "available" if capabilities.profile_configuration else "degraded"
+        mcp = "available" if capabilities.mcp_discovery else "unavailable"
         return [
             f"Hermes compatibility: {capabilities.status}",
             f"Raw skill reader: {raw}",
@@ -179,7 +184,50 @@ class HermesCompatibility:
             f"Skill execution guard: {guard}",
             f"Profile discovery: {discovery}",
             f"Profile configuration: {configuration}",
+            f"Native MCP config discovery: {mcp}",
         ]
+
+    def active_mcp_readiness(self) -> dict[str, bool | None] | None:
+        """Return passive readiness by exact active-profile MCP server identity.
+
+        ``True`` means the server has an enabled, structurally recognizable
+        profile configuration. ``False`` means it is explicitly disabled.
+        ``None`` means a named definition cannot be assessed passively. A
+        top-level ``None`` means the Hermes config API itself is unavailable.
+        """
+        if self._mcp_config_reader is None:
+            return None
+        try:
+            config = self._mcp_config_reader() or {}
+        except Exception as exc:
+            self._record_issue("MCP discovery", exc)
+            return None
+        if not isinstance(config, Mapping):
+            return None
+        servers = config.get("mcp_servers")
+        if servers is None:
+            return {}
+        if not isinstance(servers, Mapping):
+            return None
+        readiness: dict[str, bool | None] = {}
+        for raw_name, raw_definition in servers.items():
+            name = raw_name if isinstance(raw_name, str) else ""
+            if not name.strip():
+                continue
+            if not isinstance(raw_definition, Mapping):
+                readiness[name] = None
+                continue
+            enabled = _mcp_enabled(raw_definition.get("enabled", True))
+            if enabled is not True:
+                readiness[name] = enabled
+                continue
+            recognizable = any(
+                isinstance(raw_definition.get(key), str)
+                and bool(str(raw_definition.get(key)).strip())
+                for key in ("command", "url")
+            )
+            readiness[name] = True if recognizable else None
+        return readiness
 
     def readiness_hints(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
         """Normalize passive readiness fields exposed by Hermes skill metadata."""
@@ -562,6 +610,18 @@ class HermesCompatibility:
         )
 
     def _detect_internal_apis(self) -> None:
+        for module_name in ("hermes_cli.config", "hermes_agent.cli.config"):
+            try:
+                config_module = self._module_loader(module_name)
+            except Exception:
+                continue
+            reader = getattr(config_module, "load_config_readonly", None)
+            if callable(reader):
+                self._mcp_config_reader = reader
+                break
+        if self._mcp_config_reader is None:
+            self._issues.append("Hermes MCP config API is unavailable")
+
         try:
             skill_utils = self._module_loader("agent.skill_utils")
         except Exception as exc:
@@ -694,6 +754,22 @@ def _resolved(path: Any) -> str:
         return str(Path(path).expanduser().resolve())
     except OSError:
         return str(Path(path).expanduser())
+
+
+def _mcp_enabled(value: Any) -> bool | None:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
 
 
 def _running_hermes_executable() -> str | None:

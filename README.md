@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, reads their `SKILL.md` instructions, creates a routing plan with a configurable Hermes auxiliary model, mirrors the catalog and plan into OpenViking, and recommends ordered skills before every user turn. Hermes still loads the selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.4.0`). Test it with your Hermes and OpenViking versions before unattended use.
+> Status: early community release (`0.5.0`). Test it with your Hermes and OpenViking versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -17,10 +17,10 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 ## Behavior
 
 1. **Install/enable:** the plugin registers an always-on bounded system-prompt rule, lifecycle hooks, commands, and a `skill_router_planner` auxiliary task.
-2. **Initial plan:** `hermes skill-router refresh --wait` scans and analyzes the current profile immediately. Without the command, the first new session creates a deterministic base plan and starts deep analysis in the background.
+2. **Initial plan:** the first new session scans the active profile, creates a deterministic base plan, and queues background reconciliation. Model metadata enrichment occurs only in model routing mode. `refresh` remains a diagnostic fallback rather than an installation step.
 3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering.
-4. **Readiness:** declared command, Python-module, skill, and configuration requirements are checked passively during catalog refresh and cached with the plan. No setup action is executed.
-5. **Deep analysis:** only new or changed skill documents are sent in bounded batches to the configured auxiliary model.
+4. **Readiness:** declared command, Python-module, skill, MCP-server, and configuration requirements are checked passively during catalog refresh and cached with the plan. No dependency, MCP connection, or setup action is executed.
+5. **Deep analysis:** only skills with new or changed analysis inputs are sent in bounded batches to the configured auxiliary model.
 6. **OpenViking:** profile-scoped mirror names are added/updated through `/api/v1/skills`; the generated plan is written under `viking://~/resources/hermes-skill-router/{profile-scope}/plan.md` by default.
 7. **Every task:** when enabled, OpenViking `/api/v1/skills/find` supplies retrieval scores. The auxiliary model selects zero to five exact Hermes skill names and an execution order. Deterministic routing uses a strict no-skill gate, including after a model timeout or error.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
@@ -29,7 +29,7 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 11. **Execution audit:** public `post_tool_call` and `post_llm_call` observers correlate successful `skill_view` calls and compact guard outcomes with the validated routing decision. The audit itself never blocks, retries, or changes ranking.
 12. **Quality evaluation:** each finalized audit receives a versioned deterministic score for technical routing and execution quality.
 13. **Shadow learning:** current-version, high-confidence quality history is rebuilt into profile-local skill-role aggregates and conservative diagnostic biases. A separate shadow comparison is recorded, while the real selection remains unchanged.
-14. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue an incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Periodic catalog fingerprint checks catch additional changes.
+14. **Updates:** `created`, `installed`, `patched`, `edited`, `archived`, `stale`, and `restored` lifecycle events queue one coalesced incremental refresh plus a cache-settled pass after Hermes' 30-second content-cache window. Interval-gated session-start and pre-turn catalog fingerprint checks catch changes without lifecycle events.
 
 Each Hermes profile stores an independent plan and bounded audit history through `ctx.state`; profiles never inherit another profile's routing decisions or audit data. Every snapshot, audit, learning envelope, and setup roster carries an opaque canonical-home scope token, so state copied by profile cloning or renaming is rejected before catalog use or OpenViking reconciliation. The token does not reveal the profile path.
 
@@ -40,18 +40,22 @@ Each Hermes profile stores an independent plan and bounded audit history through
 - Python 3.11 or newer (Hermes runtime).
 - Optional: OpenViking `0.4.17.1` with `/api/v1/skills`, `/api/v1/skills/find`, and `/api/v1/content/write`.
 
-The plugin APIs were checked against Hermes main commit `d3e2ace1dde9f1d279f99c9ebc6bce2e761b025d` and validated with `hermes plugins doctor` on a local 2026.8.19-derived build. Hermes does not expose one global plugin API version, so run Doctor before enabling on another release.
+The lifecycle, profile, and native MCP configuration APIs were checked against Hermes main commit `a399ac2fd13da28630d3a90c255d0be458dded61` and validated with `hermes plugins doctor`. Hermes does not expose one global plugin API version, so run Doctor before enabling on another release.
 
 No additional Python package is required. The OpenViking server should remain in its own environment or container; this plugin communicates over HTTP.
 
-## Installation
+## Quick install
 
-Install the plugin once in the active profile, then let its read-only setup plan discover the profiles Hermes currently owns:
+The preferred Hermes-first workflow is to ask Hermes: **“Install the Skill Router from `MKI13/hermes-skill-router`.”** Hermes can then use its normal terminal, plugin-install, approval, and after-install mechanisms. Users do not need to locate or edit profile directories.
+
+The equivalent terminal workflow installs the plugin once in the active profile, then lets its read-only setup plan discover the profiles Hermes currently owns:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
 hermes skill-router setup
 ```
+
+The installer displays `after-install.md`. Review the detected profiles before explicitly applying the setup plan; installation never applies profile changes automatically.
 
 Hermes Git plugins are physically installed and activated per profile. The Router follows that native model: `setup --apply` invokes the official profile-scoped Hermes installer and config commands sequentially, so the user does not repeat them manually for every profile.
 
@@ -62,15 +66,6 @@ hermes skill-router setup --dry-run
 hermes skill-router setup --apply
 hermes skill-router profiles
 ```
-
-The initial settings are `deterministic`, `warn`, `shadow`, and OpenViking disabled. Existing Router settings and intentionally disabled installations are preserved. Limit a Canary rollout without embedding any profile names in Router logic:
-
-```bash
-hermes skill-router setup --target-profile <profile>
-hermes skill-router setup --target-profile <profile> --apply
-```
-
-The Router also accepts `--profile` as requested by its CLI. Current Hermes releases pre-parse that spelling as a global selector wherever it appears, so pass the invoking profile first when using the exact alias: `hermes --profile <invoking-profile> skill-router setup --profile <target-profile> --apply`. `--target-profile` avoids that host-CLI ambiguity.
 
 Use `hermes skill-router profiles --sync` after creating, deleting, or renaming profiles. This explicit sync applies missing safe Router setup through official Hermes commands, records only the detected names in the invoking profile's own inventory state, and reports new or removed names. It does not delete profiles, overwrite explicit settings, re-enable disabled installations, or merge profile state.
 
@@ -83,6 +78,49 @@ hermes plugins install MKI13/hermes-skill-router \
 ```
 
 Every profile keeps its own plugin config, visible skill catalog, readiness, audit, and learning state. A setup failure in one profile is reported without rolling back successful profiles.
+
+## How profile discovery works
+
+The compatibility layer asks Hermes for its live profile names and inspects each profile through profile-scoped Hermes commands. Setup never scans guessed directory names, copies plugin state, or combines visible skills across profiles. New, removed, and renamed profiles are reflected by the next explicit `profiles --sync`; the stored roster contains only names and an opaque scope token.
+
+## How new skills are discovered
+
+Hermes lifecycle events for created, installed, patched, edited, archived, stale, and restored skills trigger one coalesced background refresh immediately, followed by a cache-settled check after Hermes' content cache window. New and changed skills receive fresh readiness and routing metadata; content analysis runs only when the skill's analysis inputs changed. Successful authoritative scans remove skills that are no longer visible. Because Hermes exposes no delete/uninstall lifecycle event and manual file edits can emit no event, session-start and bounded per-turn fingerprint checks provide the fallback.
+
+Use `/skill-router events [N]` or `hermes skill-router events [N]` to inspect up to 50 profile-local technical change records. They contain only timestamps, event kinds, skill names, outcomes, and readiness—never skill content, prompts, configuration, errors, or credentials. `status` shows only the last skill change and whether a refresh is pending.
+
+## How MCP-backed skills work
+
+The Router still routes only Hermes skills. An MCP server remains a Hermes tool capability and is never scored or selected directly. A routable skill may declare its exact active-profile MCP server identity:
+
+```yaml
+---
+name: codebase-memory
+description: Inspect an indexed codebase and retrieve structural code context.
+requirements:
+  mcps:
+    - codebase-memory
+---
+```
+
+The identity is the exact key under the active profile's Hermes `mcp_servers` configuration. The compatibility layer reads only server names, a passive enabled flag, and whether the definition has a recognizable transport; it never copies environment variables, headers, tokens, or credentials and never starts, probes, reloads, or calls an MCP server. Missing or disabled servers produce `dependency_missing`; unavailable or structurally ambiguous discovery produces `unknown`. A later profile-local MCP configuration change is reflected on session start or the next catalog/readiness fingerprint check.
+
+**Installing an MCP alone does not make it a routable skill.** Create or install a Hermes Skill that references the MCP and instructs Hermes to use its tools after `skill_view` loads the skill. An MCP present without that skill creates no Router catalog entry. MCP requirements affect readiness, not semantic relevance scoring, and no MCP inventory is shared across profiles.
+
+## Safe defaults
+
+Adaptive setup fills only missing values with deterministic routing, warn enforcement, shadow learning, and OpenViking disabled. It preserves explicit settings and intentionally disabled installations. Setup is a dry-run unless `--apply` or `--sync` is explicit.
+
+## Canary setup
+
+Limit a rollout with a profile name discovered at runtime:
+
+```bash
+hermes skill-router setup --target-profile <profile>
+hermes skill-router setup --target-profile <profile> --apply
+```
+
+Current Hermes releases reserve `--profile` as a global selector wherever it appears. The Router alias therefore requires `hermes --profile <invoking-profile> skill-router setup --profile <target-profile> --apply`; prefer `--target-profile` to avoid ambiguity.
 
 ## Configure the planner model
 
@@ -139,6 +177,7 @@ Inside a session:
 
 ```text
 /skill-router status
+/skill-router events 20
 /skill-router refresh
 /skill-router plan
 /skill-router inspect github
@@ -164,6 +203,7 @@ hermes skill-router setup --target-profile <profile> --apply
 hermes skill-router profiles
 hermes skill-router profiles --sync
 hermes skill-router status
+hermes skill-router events 20
 hermes skill-router refresh --wait
 hermes skill-router plan
 hermes skill-router inspect github
@@ -189,10 +229,11 @@ requirements:
   commands: [git, gh]
   python_modules: [requests]
   skills: [github]
+  mcps: [codebase-memory]
   config: [GITHUB_TOKEN]
 ```
 
-Hermes' legacy `prerequisites.commands` and `prerequisites.env_vars` fields are also recognized. A skill with no declaration remains `unknown`; it is never assumed ready. Missing commands, modules, or skills produce `dependency_missing`. Missing declared configuration or `setup_required: true` produces `setup_required`. The router reports names and availability only and never prints configured values, installs dependencies, logs in, or changes configuration.
+Hermes' legacy `prerequisites.commands` and `prerequisites.env_vars` fields are also recognized. A skill with no declaration remains `unknown`; it is never assumed ready. Missing commands, modules, skills, or configured/enabled MCP servers produce `dependency_missing`. An unavailable passive MCP discovery API produces `unknown`. Missing declared configuration or `setup_required: true` produces `setup_required`. The router reports names and availability only and never prints configured values, starts MCP connections, installs dependencies, logs in, or changes configuration.
 
 Use `/skill-router inspect <skill-name>` to view the cached evidence. Readiness is recalculated with catalog refreshes rather than on every turn.
 
@@ -283,13 +324,13 @@ plugins:
 - The plugin runs as trusted in-process Python, like every native Hermes plugin. Review the code before enabling it.
 - OpenViking mirrors may contain sensitive skill procedures. Use an OpenViking account/server with appropriate access controls.
 
-## Current Hermes API limitations
+## Troubleshooting and Hermes API limitations
 
 Hermes currently has no documented public API that simultaneously provides exact raw `SKILL.md`, all discovery sources, provenance, and forced cache invalidation.
 
 All version-dependent Hermes imports and path lookup calls are isolated in `skill_router_plugin/compat/hermes.py` and detected by capability rather than version number. This plugin uses public `skills_list` as the visibility allowlist, then the compatibility layer uses the ordered and quarantined Hermes iterators to read approved files directly. It never invokes `skill_view` during inventory, so scans cannot run skill setup or alter usage telemetry. If a required internal API is unavailable or incompatible, routing safely falls back to catalog metadata only.
 
-`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, auxiliary-task, execution-audit, and execution-guard availability. Audit requires the public `post_tool_call` and `post_llm_call` hooks. Hard enforcement additionally requires `pre_tool_call`; if its registration fails, the guard reports unavailable and fails open without affecting routing or audit.
+`/skill-router status` reports `full` or `degraded` compatibility plus raw-reader, plugin-lookup, lifecycle-hook, native-MCP-config-discovery, auxiliary-task, execution-audit, and execution-guard availability. Start with `status`, then inspect `events` when a skill change is not reflected. `refresh --wait` remains the explicit diagnostic fallback. Audit requires the public `post_tool_call` and `post_llm_call` hooks. Hard enforcement additionally requires `pre_tool_call`; if its registration fails, the guard reports unavailable and fails open without affecting routing or audit.
 
 Additional limitations:
 

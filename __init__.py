@@ -49,15 +49,17 @@ def register(ctx) -> None:
     ctx.register_command(
         name="skill-router",
         handler=runtime.command,
-        description="Inspect, audit, refresh, or test the profile skill routing plan.",
+        description="Inspect events, audit, refresh, or test the profile skill routing plan.",
         args_hint=(
-            "[status|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
+            "[status|events [N]|refresh|plan|inspect <skill>|audit [last|N]|quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
         ),
     )
 
     def setup_cli(parser) -> None:
         commands = parser.add_subparsers(dest="skill_router_action")
         commands.add_parser("status", help="Show routing-plan status")
+        events = commands.add_parser("events", help="Show recent skill catalog changes")
+        events.add_argument("limit", nargs="?", type=int, default=20)
         profiles = commands.add_parser("profiles", help="Show discovered Hermes profiles")
         profiles.add_argument("--sync", action="store_true", help="Apply missing safe setup and save the name-only roster")
         setup = commands.add_parser("setup", help="Plan or apply adaptive profile setup")
@@ -85,6 +87,9 @@ def register(ctx) -> None:
         action = getattr(args, "skill_router_action", None)
         if action == "status":
             print(runtime.status_text())
+            return 0
+        if action == "events":
+            print(runtime.command(f"events {getattr(args, 'limit', 20)}"))
             return 0
         if action == "profiles":
             if not compatibility.capabilities.profile_discovery:
@@ -144,7 +149,7 @@ def register(ctx) -> None:
             else:
                 print(runtime.command("refresh"))
             return 0
-        print("Usage: hermes skill-router {status|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}")
+        print("Usage: hermes skill-router {status|events|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}")
         return 2
 
     ctx.register_cli_command(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from copy import deepcopy
 import threading
 from types import SimpleNamespace
@@ -112,6 +113,8 @@ def test_lifecycle_worker_rechecks_after_host_cache_window(monkeypatch):
     runtime = SkillRouterRuntime(Ctx())
     calls = []
     runtime._pending_reason = "lifecycle:patched:github"
+    runtime._lifecycle_settle_requested = True
+    runtime._lifecycle_settle_reason = "lifecycle:patched:github"
     monkeypatch.setattr(runtime_module, "_HERMES_SKILL_CACHE_SETTLE_SECONDS", 0.0)
     monkeypatch.setattr(runtime, "deep_refresh", lambda reason: calls.append(reason) or {})
 
@@ -979,3 +982,435 @@ def test_snapshot_compacts_before_state_quota():
 def test_command_rejects_unknown_action():
     runtime = SkillRouterRuntime(Ctx())
     assert runtime.command("unknown").startswith("Usage:")
+
+
+def _catalog(*records, catalog_hash="catalog", listing_available=True):
+    return {
+        "catalog_hash": catalog_hash,
+        "reader_mode": "raw-path-current-hermes",
+        "listing_available": listing_available,
+        "skills": list(records),
+    }
+
+
+def _record(name, content_hash, readiness_hash="ready", readiness="ready", content="# Skill"):
+    return {
+        "name": name,
+        "description": name,
+        "category": "test",
+        "content": content,
+        "content_hash": content_hash,
+        "readiness_hash": readiness_hash,
+        "readiness_status": readiness,
+        "setup_needed": False,
+        "requirements": {"skills": []},
+        "dependency_checks": [],
+        "readiness_reasons": [],
+    }
+
+
+def test_unavailable_catalog_preserves_snapshot_and_openviking_ownership(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    runtime._save_snapshot({
+        "catalog_hash": "stable",
+        "catalog_scanned_at": "stable-time",
+        "entries": [{"name": "github", "content_hash": "old", "analysis": "model"}],
+        "openviking_owned_names": ["owned-github"],
+    })
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: _catalog(
+            catalog_hash="empty-fingerprint", listing_available=False
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.openviking,
+        "sync_skills",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not sync")),
+    )
+
+    report = runtime.deep_refresh("test-unavailable")
+    snapshot = runtime._snapshot()
+
+    assert report["saved"] is False
+    assert report["reason"] == "catalog-unavailable"
+    assert snapshot["catalog_hash"] == "stable"
+    assert snapshot["catalog_scanned_at"] == "stable-time"
+    assert [entry["name"] for entry in snapshot["entries"]] == ["github"]
+    assert snapshot["openviking_owned_names"] == ["owned-github"]
+    assert runtime.events.last()["event"] == "skill_refresh_failed"
+    assert runtime.events.last()["result"] == "unavailable"
+
+
+def test_authoritative_empty_catalog_removes_entries_and_owned_mirrors(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    runtime._save_snapshot({
+        "catalog_hash": "old",
+        "entries": [{
+            "name": "github",
+            "content_hash": "old",
+            "readiness_hash": "ready",
+            "readiness_status": "ready",
+            "analysis": "model",
+        }],
+        "openviking_owned_names": ["owned-github"],
+    })
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: _catalog(catalog_hash="empty"),
+    )
+    reconciled = []
+
+    def sync(records, entries, *, previous_owned, should_stop):
+        reconciled.append((records, entries, previous_owned))
+        return {
+            "enabled": True,
+            "synced": 0,
+            "deleted": 1,
+            "failed": [],
+            "owned_names": [],
+        }
+
+    monkeypatch.setattr(runtime.openviking, "sync_skills", sync)
+    monkeypatch.setattr(runtime.openviking, "write_plan", lambda plan: True)
+
+    report = runtime.deep_refresh("test-empty")
+    snapshot = runtime._snapshot()
+
+    assert report["saved"] is True
+    assert reconciled == [([], [], {"owned-github"})]
+    assert snapshot["entries"] == []
+    assert snapshot["openviking_owned_names"] == []
+    assert runtime.events.last()["event"] == "skill_removed"
+    assert runtime.events.last()["skill_name"] == "github"
+
+
+def test_deep_refresh_scans_once_and_analyzes_only_changed_content(monkeypatch):
+    ctx = Ctx({"routing_mode": "model"})
+    calls = []
+
+    class Llm:
+        def complete_structured(self, **kwargs):
+            text = kwargs["input"][0]["text"]
+            calls.append(text)
+            assert 'name="changed"' in text
+            assert 'name="stable"' not in text
+            return SimpleNamespace(parsed={
+                "skills": [{
+                    "name": "changed",
+                    "use_when": ["new trigger"],
+                    "avoid_when": [],
+                    "keywords": ["changed"],
+                    "works_with": [],
+                    "alternatives": [],
+                }]
+            })
+
+    ctx.llm = Llm()
+    runtime = SkillRouterRuntime(ctx, Compatibility("full"))
+    runtime._save_snapshot({
+        "catalog_hash": "old-catalog",
+        "entries": [
+            {
+                **runtime_module.base_plan_entry(_record("stable", "same")),
+                "analysis": "model",
+                "use_when": ["preserved trigger"],
+            },
+            {
+                **runtime_module.base_plan_entry(_record("changed", "old")),
+                "analysis": "model",
+            },
+        ],
+    })
+    scans = []
+    catalog = _catalog(
+        _record("stable", "same"),
+        _record("changed", "new", content="# Changed"),
+        catalog_hash="new-catalog",
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: scans.append(True) or deepcopy(catalog),
+    )
+
+    report = runtime.deep_refresh("changed-only")
+    entries = {entry["name"]: entry for entry in runtime._snapshot()["entries"]}
+
+    assert len(scans) == 1
+    assert report["changed"] == 1
+    assert len(calls) == 1
+    assert entries["stable"]["use_when"] == ["preserved trigger"]
+    assert entries["changed"]["use_when"] == ["new trigger"]
+    assert entries["changed"]["analysis"] == "model"
+
+
+def test_catalog_generation_prevents_stale_analysis_commit(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"routing_mode": "model"}), Compatibility("full"))
+    runtime._save_snapshot({"catalog_hash": "initial", "entries": []})
+    catalogs = iter([
+        _catalog(_record("old", "old"), catalog_hash="old-catalog"),
+        _catalog(_record("new", "new"), catalog_hash="new-catalog"),
+    ])
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: deepcopy(next(catalogs)),
+    )
+
+    def analyze(ctx, records, entries, **kwargs):
+        assert [record["name"] for record in records] == ["old"]
+        assert runtime.ensure_catalog(force=True) is True
+        return [{**entries[0], "analysis": "model", "use_when": ["stale"]}], {
+            "changed": 1,
+            "calls": 1,
+            "failures": [],
+        }
+
+    monkeypatch.setattr(runtime_module, "analyze_changed_skills", analyze)
+    monkeypatch.setattr(
+        runtime.openviking,
+        "sync_skills",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("stale sync")),
+    )
+    monkeypatch.setattr(runtime, "request_deep_refresh", lambda reason: False)
+
+    report = runtime.deep_refresh("generation-race")
+    snapshot = runtime._snapshot()
+
+    assert report["saved"] is False
+    assert report["reason"] == "catalog-changed"
+    assert snapshot["catalog_hash"] == "new-catalog"
+    assert [entry["name"] for entry in snapshot["entries"]] == ["new"]
+    assert "stale" not in repr(snapshot)
+
+
+def test_stale_openviking_sync_retains_ownership_for_next_reconciliation(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"openviking_enabled": True}), Compatibility("full"))
+    catalogs = iter([
+        _catalog(_record("new", "new-hash"), catalog_hash="catalog-a"),
+        _catalog(catalog_hash="catalog-b"),
+        _catalog(catalog_hash="catalog-b"),
+    ])
+    sync_calls = []
+
+    monkeypatch.setattr(runtime_module, "scan_catalog", lambda ctx, compatibility: next(catalogs))
+    monkeypatch.setattr(runtime.openviking, "write_plan", lambda plan: False)
+    monkeypatch.setattr(runtime, "request_deep_refresh", lambda reason: False)
+
+    def sync(skills, entries, *, previous_owned, should_stop):
+        sync_calls.append(set(previous_owned))
+        if len(sync_calls) == 1:
+            assert runtime.ensure_catalog(force=True) is True
+            return {"enabled": True, "synced": 1, "failed": [], "owned_names": ["mirror-new"]}
+        return {"enabled": True, "synced": 0, "failed": [], "owned_names": []}
+
+    monkeypatch.setattr(runtime.openviking, "sync_skills", sync)
+
+    first = runtime.deep_refresh("stale-sync")
+    retained = runtime._snapshot()
+    second = runtime.deep_refresh("reconcile")
+
+    assert first["saved"] is False
+    assert retained["entries"] == []
+    assert retained["openviking_owned_names"] == ["mirror-new"]
+    assert sync_calls == [set(), {"mirror-new"}]
+    assert second["saved"] is True
+    assert runtime._snapshot()["openviking_owned_names"] == []
+
+
+def test_lifecycle_settle_survives_later_non_lifecycle_request(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    first_started = threading.Event()
+    release_first = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def deep_refresh(reason):
+        calls.append(reason)
+        if reason == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        if reason.endswith(":cache-settled"):
+            finished.set()
+        return {}
+
+    monkeypatch.setattr(runtime_module, "_HERMES_SKILL_CACHE_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(runtime, "deep_refresh", deep_refresh)
+    try:
+        assert runtime.request_deep_refresh("first") is True
+        assert first_started.wait(timeout=2)
+        assert runtime.request_deep_refresh("lifecycle:patched:github") is False
+        assert runtime.request_deep_refresh("manual") is False
+        release_first.set()
+        assert finished.wait(timeout=2)
+    finally:
+        release_first.set()
+        runtime.stop()
+
+    assert calls == ["first", "manual", "lifecycle:patched:github:cache-settled"]
+
+
+def test_request_during_cache_settle_runs_without_waiting_full_window(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx())
+    entered_wait = threading.Event()
+    release_wait = threading.Event()
+    manual_finished = threading.Event()
+    calls = []
+    wait_calls = {"count": 0}
+
+    def deep_refresh(reason):
+        calls.append(reason)
+        if reason == "manual":
+            manual_finished.set()
+        return {}
+
+    def controlled_wait(timeout):
+        wait_calls["count"] += 1
+        if wait_calls["count"] == 1:
+            entered_wait.set()
+            assert release_wait.wait(timeout=2)
+            return True
+        return runtime._stop.wait(timeout)
+
+    monkeypatch.setattr(runtime, "deep_refresh", deep_refresh)
+    monkeypatch.setattr(runtime._worker_wake, "wait", controlled_wait)
+    try:
+        assert runtime.request_deep_refresh("lifecycle:installed:new-skill") is True
+        assert entered_wait.wait(timeout=2)
+        assert runtime.request_deep_refresh("manual") is False
+        release_wait.set()
+        assert manual_finished.wait(timeout=2)
+    finally:
+        release_wait.set()
+        runtime.stop()
+
+    assert calls[:2] == ["lifecycle:installed:new-skill", "manual"]
+
+
+def test_background_refresh_preserves_profile_context(monkeypatch):
+    active_home = ContextVar("active_home", default="wrong-profile")
+    runtime = SkillRouterRuntime(Ctx())
+    observed = []
+    finished = threading.Event()
+
+    def deep_refresh(reason):
+        observed.append(active_home.get())
+        finished.set()
+        return {}
+
+    monkeypatch.setattr(runtime, "deep_refresh", deep_refresh)
+    token = active_home.set("profile-a")
+    try:
+        assert runtime.request_deep_refresh("context-test") is True
+    finally:
+        active_home.reset(token)
+    try:
+        assert finished.wait(timeout=2)
+    finally:
+        runtime.stop()
+
+    assert observed == ["profile-a"]
+
+
+def test_catalog_delta_events_are_bounded_and_never_store_content(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    forbidden_marker = "unwanted-skill-content"
+    current = {"index": 0}
+
+    def scan(ctx, compatibility):
+        index = current["index"]
+        return _catalog(
+            _record(
+                "github",
+                "same-content-hash",
+                readiness_hash=f"readiness-{index}",
+                readiness="ready" if index % 2 else "unknown",
+                content=forbidden_marker,
+            ),
+            catalog_hash=f"catalog-{index}",
+        )
+
+    monkeypatch.setattr(runtime_module, "scan_catalog", scan)
+    for index in range(62):
+        current["index"] = index
+        assert runtime.ensure_catalog(force=True) is True
+
+    events = runtime.events.recent()
+    assert len(events) == 50
+    assert events[0]["event"] == "skill_updated"
+    assert forbidden_marker not in repr(runtime.ctx.state.values["router.events"])
+
+
+def test_new_skill_lifecycle_event_builds_catalog_without_manual_refresh(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    detected = threading.Event()
+    original_record = runtime.events.record
+
+    def record(event, **kwargs):
+        original_record(event, **kwargs)
+        if event == "skill_detected":
+            detected.set()
+
+    monkeypatch.setattr(runtime.events, "record", record)
+    monkeypatch.setattr(runtime_module, "_HERMES_SKILL_CACHE_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: _catalog(
+            _record("new-skill", "new-content"), catalog_hash="new-catalog"
+        ),
+    )
+    try:
+        runtime.on_skill_lifecycle(action="installed", skill_name="new-skill")
+        assert detected.wait(timeout=2)
+    finally:
+        runtime.stop()
+
+    assert [entry["name"] for entry in runtime._snapshot()["entries"]] == ["new-skill"]
+    assert runtime.events.last()["skill_name"] == "new-skill"
+
+
+def test_session_start_rescan_detects_skill_without_lifecycle_event(monkeypatch):
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 1.0)
+    runtime = SkillRouterRuntime(
+        Ctx({"deep_refresh_on_start": False}), Compatibility("full")
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "scan_catalog",
+        lambda ctx, compatibility: _catalog(
+            _record("manual-skill", "manual-content"), catalog_hash="manual-catalog"
+        ),
+    )
+
+    runtime.on_session_start()
+
+    assert [entry["name"] for entry in runtime._snapshot()["entries"]] == ["manual-skill"]
+    assert runtime.events.last()["event"] == "skill_detected"
+
+
+def test_events_command_status_and_unknown_dependency_rendering(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx(), Compatibility("full"))
+    runtime.events.record(
+        "skill_detected", skill_name="github", result="added", readiness="ready"
+    )
+    runtime._catalog_pending_refresh = True
+    runtime._save_snapshot({
+        "entries": [{
+            "name": "github",
+            "readiness_status": "unknown",
+            "dependency_checks": [{"type": "mcp_server", "name": "github", "available": None}],
+        }]
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+
+    status = runtime.status_text()
+
+    assert "Detected: github (added, ready)" in runtime.command("events 1")
+    assert runtime.command("events 0") == "Usage: /skill-router events [1-50]"
+    assert "Last skill change: github detected at " in status
+    assert "Catalog pending refresh: yes" in status
+    assert "mcp server github: unknown" in runtime.command("inspect github")

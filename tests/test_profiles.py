@@ -158,6 +158,12 @@ def test_apply_configures_all_live_profiles_and_uses_pinned_child_cli():
 
     assert summary.configured == ("alpha", "beta")
     assert summary.untouched == ("gamma",)
+    rendered = summary.render()
+    assert "Profiles detected: 3" in rendered
+    assert "Configured: 2" in rendered
+    assert "Preserved: 1" in rendered
+    assert "Failed: 0" in rendered
+    assert "New skills installed later will be discovered automatically." in rendered
     install = compatibility.commands[0]
     assert install == (
         "alpha",

@@ -100,6 +100,37 @@ def test_required_skill_missing_is_dependency_missing():
     }
 
 
+def test_mcp_requirement_is_ready_only_when_profile_server_is_enabled():
+    content = skill_content("requirements:\n  mcps: [codebase-memory]")
+
+    ready = evaluate(content, mcp_readiness={"codebase-memory": True})
+    missing = evaluate(content, mcp_readiness={})
+    disabled = evaluate(content, mcp_readiness={"codebase-memory": False})
+
+    assert ready["readiness_status"] == READY
+    assert ready["dependency_checks"] == [{
+        "type": "mcp",
+        "name": "codebase-memory",
+        "available": True,
+    }]
+    assert missing["readiness_status"] == DEPENDENCY_MISSING
+    assert disabled["readiness_status"] == DEPENDENCY_MISSING
+
+
+def test_mcp_requirement_is_unknown_when_passive_discovery_is_unavailable():
+    result = evaluate(
+        skill_content("requirements:\n  mcps:\n    - codebase-memory"),
+        mcp_readiness=None,
+    )
+
+    assert result["readiness_status"] == UNKNOWN
+    assert result["dependency_checks"] == [{
+        "type": "mcp",
+        "name": "codebase-memory",
+        "available": None,
+    }]
+
+
 def test_missing_declared_config_requires_setup_without_exposing_value():
     secret = "super-secret-token"
     result = evaluate(

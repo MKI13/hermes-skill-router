@@ -4,7 +4,7 @@ Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https
 
 Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, liest deren `SKILL.md`, erzeugt mit einem konfigurierbaren Hermes-Hilfsmodell einen Einsatzplan, spiegelt Katalog und Plan nach OpenViking und empfiehlt vor jeder Benutzeraufgabe die passenden Skills in der richtigen Reihenfolge. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.4.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
+> Status: frühe Community-Version (`0.5.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und OpenViking-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 
@@ -17,9 +17,9 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 ## Ablauf
 
 1. Das Plugin registriert einen kurzen dauerhaften Systemhinweis, Lifecycle-Hooks, Befehle und den Hilfsmodell-Task `skill_router_planner`.
-2. `hermes skill-router refresh --wait` erstellt direkt nach der Installation den ersten vollständigen Plan. Ohne diesen Befehl erzeugt die erste neue Session einen Basisplan und startet die tiefere Analyse im Hintergrund.
+2. Die erste neue Session scannt das aktive Profil, erzeugt einen deterministischen Basisplan und stellt den Hintergrundabgleich in die Warteschlange. Eine Anreicherung der Modellmetadaten erfolgt nur im Modell-Routingmodus. `refresh` bleibt ein Diagnose-Fallback und ist kein Installationsschritt.
 3. Hermes liefert den effektiven Katalog aus vertrauenswürdigen Projekt-Skills, lokalen Profil-Skills, externen Verzeichnissen und aktiven Plugin-Skills.
-4. Deklarierte Befehls-, Python-Modul-, Skill- und Konfigurationsanforderungen werden beim Katalog-Refresh passiv geprüft und mit dem Plan gespeichert. Der Router führt kein Setup aus.
+4. Deklarierte Befehls-, Python-Modul-, Skill-, MCP-Server- und Konfigurationsanforderungen werden beim Katalog-Refresh passiv geprüft und mit dem Plan gespeichert. Der Router führt weder Setup noch MCP-Verbindungen aus.
 5. Nur neue oder geänderte Skill-Dokumente werden erneut analysiert.
 6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profil-scope}/plan.md`.
 7. Wenn aktiviert, liefert OpenViking vor jeder Aufgabe semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge. Deterministisches Routing verwendet auch nach Modell-Timeouts und -Fehlern dasselbe strikte No-Skill-Gate.
@@ -29,22 +29,26 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 11. Die öffentlichen Observer `post_tool_call` und `post_llm_call` ordnen erfolgreiche `skill_view`-Aufrufe und kompakte Guard-Ergebnisse der validierten Routing-Entscheidung zu. Der Audit selbst blockiert nichts, wiederholt nichts und verändert kein Ranking.
 12. Jeder finalisierte Audit erhält eine versionierte deterministische Bewertung der technischen Routing- und Ausführungsqualität.
 13. Aktuelle hochwertige Quality-Historie wird in profilspezifische Skill-/Rollen-Aggregate und konservative diagnostische Bias-Werte umgebaut. Ein separater Shadow-Vergleich wird gespeichert, während die reale Auswahl unverändert bleibt.
-14. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren und Wiederherstellen eines Skills löst eine inkrementelle Aktualisierung und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Regelmäßige Fingerprint-Prüfungen erkennen weitere Änderungen.
+14. Erstellen, Installieren, Patchen, Bearbeiten, Archivieren, als veraltet Markieren und Wiederherstellen eines Skills löst einen zusammengefassten inkrementellen Refresh und nach dem 30-Sekunden-Cachefenster eine zweite Prüfung aus. Intervallbegrenzte Prüfungen beim Session-Start und vor Turns erkennen Änderungen ohne Lifecycle-Event.
 
 Jedes Hermes-Profil besitzt einen eigenen Plan und eine begrenzte Audit-Historie in `ctx.state`; Profile beeinflussen sich nicht gegenseitig. Snapshot-, Audit-, Learning- und Setup-Inventar-Umschläge tragen einen undurchsichtigen Scope-Token des kanonischen Profilverzeichnisses. Bei Klonen oder Umbenennen kopierter State wird deshalb vor Katalognutzung und OpenViking-Abgleich verworfen, ohne den Pfad offenzulegen.
 
 ## Kompatibilität
 
-Die Plugin-APIs wurden gegen Hermes-Main-Commit `d3e2ace1dde9f1d279f99c9ebc6bce2e761b025d` geprüft und mit `hermes plugins doctor` auf einem lokalen, von 2026.8.19 abgeleiteten Build validiert. OpenViking `0.4.17.1` ist die geprüfte API-Version. Vor dem Aktivieren auf einer anderen Hermes-Version `hermes plugins doctor . --ci` ausführen.
+Die Lifecycle-, Profil- und nativen MCP-Konfigurations-APIs wurden gegen Hermes-Main-Commit `a399ac2fd13da28630d3a90c255d0be458dded61` geprüft und mit `hermes plugins doctor` validiert. OpenViking `0.4.17.1` ist die geprüfte API-Version. Vor dem Aktivieren auf einer anderen Hermes-Version `hermes plugins doctor . --ci` ausführen.
 
-## Installation
+## Schnellinstallation
 
-Das Plugin einmal im aktiven Profil installieren und anschließend den standardmäßig schreibgeschützten Setup-Plan ausführen:
+Der bevorzugte Hermes-first-Ablauf ist eine direkte Bitte an Hermes: **„Installiere den Skill Router aus `MKI13/hermes-skill-router`.“** Hermes verwendet dafür seine normalen Terminal-, Plugin-, Approval- und After-Install-Mechanismen. Benutzer müssen keine Profilverzeichnisse kennen oder bearbeiten.
+
+Der entsprechende Terminal-Ablauf installiert das Plugin einmal im aktiven Profil und führt anschließend den standardmäßig schreibgeschützten Setup-Plan aus:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
 hermes skill-router setup
 ```
+
+Der Installer zeigt `after-install.md`. Erst den erkannten Profilplan prüfen und anschließend ausdrücklich anwenden; die Installation führt niemals automatisch ein Profil-Apply aus.
 
 Hermes installiert und aktiviert Git-Plugins physisch pro Profil. Der Router folgt diesem nativen Modell: `setup --apply` ruft den offiziellen profilbezogenen Hermes-Installer und die Config-Befehle nacheinander auf. Dadurch muss der Benutzer die Installation nicht für jedes Profil manuell wiederholen.
 
@@ -56,18 +60,52 @@ hermes skill-router setup --apply
 hermes skill-router profiles
 ```
 
-Die sicheren Anfangswerte sind `deterministic`, `warn`, `shadow` und deaktiviertes OpenViking. Bestehende Router-Einstellungen und absichtlich deaktivierte Installationen bleiben erhalten. Ein Canary-Rollout verwendet einen zur Laufzeit entdeckten Namen:
+Nach Erstellen, Löschen oder Umbenennen von Profilen erkennt `hermes skill-router profiles --sync` neue und entfernte Namen. Dieser ausdrücklich angeforderte Sync ergänzt fehlendes sicheres Router-Setup über offizielle Hermes-Befehle und speichert im Inventar-State ausschließlich die erkannten Namen. Profile werden nicht gelöscht, explizite Werte nicht überschrieben, deaktivierte Installationen nicht aktiviert und Profil-States nicht zusammengeführt.
+
+Jedes Profil behält eigene Plugin-Konfiguration, sichtbare Skills, Readiness, Audits und Learning-Daten. Schlägt ein Profil fehl, bleiben erfolgreiche Profile bestehen und werden getrennt ausgewiesen.
+
+## Funktionsweise der Profilerkennung
+
+Die Compatibility-Schicht fragt Hermes nach den aktuellen Profilnamen und inspiziert jedes Profil über profilbezogene Hermes-Befehle. Das Setup errät keine Verzeichnisnamen, kopiert keinen Plugin-State und vereinigt keine sichtbaren Skills mehrerer Profile. Neue, entfernte und umbenannte Profile erscheinen beim nächsten ausdrücklichen `profiles --sync`; das gespeicherte Inventar enthält nur Namen und einen undurchsichtigen Scope-Token.
+
+## Automatische Erkennung neuer Skills
+
+Hermes-Lifecycle-Events für erstellte, installierte, gepatchte, bearbeitete, archivierte, veraltete und wiederhergestellte Skills starten unmittelbar einen einzelnen zusammengefassten Hintergrund-Refresh sowie eine Cache-settled-Prüfung nach Hermes' Content-Cachefenster. Neue und geänderte Skills erhalten aktuelle Readiness- und Routing-Metadaten; Content-Analyse läuft nur bei veränderten Analyse-Eingaben. Erfolgreiche autoritative Scans entfernen nicht mehr sichtbare Skills. Da Hermes kein Delete-/Uninstall-Event bereitstellt und manuelle Dateiänderungen kein Event liefern müssen, dienen Session-Start und intervallbegrenzte Fingerprint-Prüfungen vor Turns als Fallback.
+
+`/skill-router events [N]` beziehungsweise `hermes skill-router events [N]` zeigt bis zu 50 profilspezifische technische Änderungen. Gespeichert werden ausschließlich Zeitstempel, Event-Arten, Skill-Namen, Ergebnisse und Readiness – niemals Skill-Inhalte, Prompts, Konfiguration, Fehler oder Zugangsdaten. `status` zeigt nur die letzte Skill-Änderung und einen eventuell ausstehenden Refresh.
+
+## Funktionsweise MCP-gestützter Skills
+
+Der Router routet weiterhin ausschließlich Hermes-Skills. Ein MCP-Server bleibt eine Hermes-Tool-Capability und wird niemals direkt bewertet oder ausgewählt. Ein routbarer Skill kann die exakte MCP-Server-Identität des aktiven Profils deklarieren:
+
+```yaml
+---
+name: codebase-memory
+description: Inspect an indexed codebase and retrieve structural code context.
+requirements:
+  mcps:
+    - codebase-memory
+---
+```
+
+Die Identität ist der exakte Schlüssel unter `mcp_servers` in der Hermes-Konfiguration des aktiven Profils. Die Compatibility-Schicht liest nur Servernamen, den passiven Enabled-Zustand und das Vorhandensein einer erkennbaren Transportdefinition. Sie kopiert keine Umgebungsvariablen, Header, Tokens oder Zugangsdaten und startet, prüft, lädt oder verwendet keinen MCP-Server. Fehlende oder deaktivierte Server ergeben `dependency_missing`; nicht verfügbare oder strukturell unklare passive Erkennung ergibt `unknown`. Eine spätere profilbezogene MCP-Konfigurationsänderung wird beim Session-Start oder der nächsten Katalog-/Readiness-Fingerprint-Prüfung sichtbar.
+
+**Die Installation eines MCP allein macht ihn nicht zu einem routbaren Skill.** Dafür muss ein Hermes-Skill erstellt oder installiert werden, der den MCP referenziert und Hermes nach dem Laden durch `skill_view` zur Verwendung seiner Tools anweist. Ein MCP ohne diesen Skill erzeugt keinen Router-Katalogeintrag. MCP-Anforderungen beeinflussen Readiness, nicht den semantischen Relevanzwert; zwischen Profilen wird kein MCP-Inventar geteilt.
+
+## Sichere Standards
+
+Das adaptive Setup ergänzt nur fehlende Werte mit deterministischem Routing, Warn-Enforcement, Shadow Learning und deaktiviertem OpenViking. Explizite Einstellungen und absichtlich deaktivierte Installationen bleiben erhalten. Ohne ausdrückliches `--apply` oder `--sync` bleibt das Setup ein Dry-Run.
+
+## Canary-Setup
+
+Ein begrenzter Rollout verwendet einen zur Laufzeit entdeckten Profilnamen:
 
 ```bash
 hermes skill-router setup --target-profile <profil>
 hermes skill-router setup --target-profile <profil> --apply
 ```
 
-Der Router akzeptiert außerdem das angeforderte `--profile`. Aktuelle Hermes-Versionen lesen diese Schreibweise unabhängig von ihrer Position vorab als globalen Profilselektor. Deshalb muss bei Verwendung dieses Alias zuerst das aufrufende Profil angegeben werden: `hermes --profile <aufrufendes-profil> skill-router setup --profile <zielprofil> --apply`. `--target-profile` vermeidet diese Mehrdeutigkeit der Host-CLI.
-
-Nach Erstellen, Löschen oder Umbenennen von Profilen erkennt `hermes skill-router profiles --sync` neue und entfernte Namen. Dieser ausdrücklich angeforderte Sync ergänzt fehlendes sicheres Router-Setup über offizielle Hermes-Befehle und speichert im Inventar-State ausschließlich die erkannten Namen. Profile werden nicht gelöscht, explizite Werte nicht überschrieben, deaktivierte Installationen nicht aktiviert und Profil-States nicht zusammengeführt.
-
-Jedes Profil behält eigene Plugin-Konfiguration, sichtbare Skills, Readiness, Audits und Learning-Daten. Schlägt ein Profil fehl, bleiben erfolgreiche Profile bestehen und werden getrennt ausgewiesen.
+Aktuelle Hermes-Versionen reservieren `--profile` positionsunabhängig als globalen Selektor. Der Router-Alias benötigt deshalb `hermes --profile <aufrufendes-profil> skill-router setup --profile <zielprofil> --apply`; `--target-profile` vermeidet diese Mehrdeutigkeit.
 
 ## Lokales Planungsmodell konfigurieren
 
@@ -111,6 +149,7 @@ In einer Session:
 
 ```text
 /skill-router status
+/skill-router events 20
 /skill-router refresh
 /skill-router plan
 /skill-router inspect github
@@ -136,6 +175,7 @@ hermes skill-router setup --target-profile <profil> --apply
 hermes skill-router profiles
 hermes skill-router profiles --sync
 hermes skill-router status
+hermes skill-router events 20
 hermes skill-router refresh --wait
 hermes skill-router plan
 hermes skill-router inspect github
@@ -161,10 +201,11 @@ requirements:
   commands: [git, gh]
   python_modules: [requests]
   skills: [github]
+  mcps: [codebase-memory]
   config: [GITHUB_TOKEN]
 ```
 
-Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars` werden ebenfalls erkannt. Ohne Deklaration bleibt ein Skill `unknown`; er wird nicht automatisch als einsatzbereit betrachtet. Fehlende Befehle, Module oder Skills ergeben `dependency_missing`. Fehlende deklarierte Konfiguration oder `setup_required: true` ergeben `setup_required`. Der Router zeigt nur Namen und Verfügbarkeit an und gibt niemals konfigurierte Werte aus, installiert nichts, meldet sich nirgendwo an und verändert keine Konfiguration.
+Die älteren Hermes-Felder `prerequisites.commands` und `prerequisites.env_vars` werden ebenfalls erkannt. Ohne Deklaration bleibt ein Skill `unknown`; er wird nicht automatisch als einsatzbereit betrachtet. Fehlende Befehle, Module, Skills oder konfigurierte und aktivierte MCP-Server ergeben `dependency_missing`. Eine nicht verfügbare passive MCP-Erkennung ergibt `unknown`. Fehlende deklarierte Konfiguration oder `setup_required: true` ergeben `setup_required`. Der Router zeigt nur Namen und Verfügbarkeit an und gibt niemals konfigurierte Werte aus, startet keine MCP-Verbindung, installiert nichts, meldet sich nirgendwo an und verändert keine Konfiguration.
 
 `/skill-router inspect <skill-name>` zeigt die gespeicherten Prüfergebnisse. Die Readiness wird beim Katalog-Refresh statt bei jedem Turn neu berechnet.
 
@@ -240,6 +281,10 @@ plugins:
         openviking_plan_uri: "viking://~/resources/hermes-skill-router/{profile}/plan.md"
 ```
 
+## Fehlerdiagnose
+
+Zuerst `/skill-router status` ausführen und anschließend `events` prüfen, wenn eine Skill-Änderung nicht sichtbar ist. `refresh --wait` bleibt der ausdrückliche Diagnose-Fallback. Der Status meldet neben den bisherigen Hermes-Capabilities auch die passive native MCP-Konfigurationserkennung als `available` oder `unavailable`.
+
 ## Sicherheit und bekannte Grenzen
 
 - OpenViking liefert nur Retrieval-Hinweise und Skill-Namen. Die dort gespeicherte Kopie wird nicht direkt als ausführbare Anweisung eingefügt.
@@ -251,7 +296,7 @@ plugins:
 - Die HTTP-Brücke blockiert URL-Zugangsdaten, Pfade, Query-Strings, Redirects, Proxys, Metadaten-/Link-Local-Ziele und übergroße Antworten. Zugangsdaten außerhalb von Loopback erfordern HTTPS.
 - Das Hilfsmodell erhält Skill-Dokumente ausdrücklich als nicht vertrauenswürdige Analysedaten.
 - Hermes besitzt derzeit keine öffentliche Plugin-API, die gleichzeitig exakte Rohdateien, alle Quellen, Provenienz und eine erzwungene Cache-Aktualisierung anbietet. Alle versionsabhängigen Hermes-Imports und Pfadzugriffe liegen deshalb in `skill_router_plugin/compat/hermes.py` und werden über Feature Detection geprüft. Fehlt eine benötigte interne API oder ist sie inkompatibel, verwendet der Router ausschließlich Katalogmetadaten.
-- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook, Auxiliary Tasks, Skill-Ausführungs-Audit und Execution Guard. Der Audit benötigt die öffentlichen Hooks `post_tool_call` und `post_llm_call`. Hartes Enforcement benötigt zusätzlich `pre_tool_call`; schlägt dessen Registrierung fehl, meldet der Guard `unavailable` und läuft offen weiter, ohne Routing oder Audit zu beeinträchtigen.
+- `/skill-router status` zeigt `full` oder `degraded` sowie die Verfügbarkeit von Raw Reader, Plugin-Skill-Lookup, Lifecycle-Hook, native MCP-Konfigurationserkennung, Auxiliary Tasks, Skill-Ausführungs-Audit und Execution Guard. Der Audit benötigt die öffentlichen Hooks `post_tool_call` und `post_llm_call`. Hartes Enforcement benötigt zusätzlich `pre_tool_call`; schlägt dessen Registrierung fehl, meldet der Guard `unavailable` und läuft offen weiter, ohne Routing oder Audit zu beeinträchtigen.
 - Der Lifecycle-Hook meldet derzeit kein Löschen oder Deinstallieren. Die regelmäßige Katalogprüfung erkennt solche Änderungen später.
 - Änderungen innerhalb einer `SKILL.md` können wegen Hermes-Cachezeiten ungefähr 30 Sekunden verzögert erscheinen.
 - Ein bereits bestehender System-Prompt wird aus Cache-Gründen nicht verändert. Die dynamische Empfehlung wird trotzdem bei jedem Turn über `pre_llm_call` ergänzt.

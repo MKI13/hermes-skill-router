@@ -117,7 +117,7 @@ class ProfileSetupSummary:
         lines = [
             "Hermes Skill Router Setup",
             "",
-            f"Detected profiles: {len(self.profiles)}",
+            f"Profiles detected: {len(self.profiles)}",
             "",
             "Recommended initial mode:",
             "routing: deterministic",
@@ -136,9 +136,11 @@ class ProfileSetupSummary:
         if not self.dry_run:
             lines.extend((
                 "",
-                f"{len(self.configured)} configured",
-                f"{len(self.failed)} failed",
-                f"{len(self.untouched)} untouched",
+                f"Configured: {len(self.configured)}",
+                f"Preserved: {len(self.untouched)}",
+                f"Failed: {len(self.failed)}",
+                "",
+                "New skills installed later will be discovered automatically.",
             ))
         return "\n".join(lines)
 

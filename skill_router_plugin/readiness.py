@@ -31,7 +31,7 @@ READINESS_PRIORITY = {
     BROKEN: 4,
     DISABLED: 5,
 }
-_REQUIREMENT_KEYS = ("commands", "python_modules", "skills", "config")
+_REQUIREMENT_KEYS = ("commands", "python_modules", "skills", "mcps", "config")
 
 
 def evaluate_readiness(
@@ -41,6 +41,7 @@ def evaluate_readiness(
     metadata_hints: Mapping[str, Any] | None,
     get_config: Callable[[str, Any], Any],
     content_expected: bool,
+    mcp_readiness: Mapping[str, bool | None] | None = None,
     command_finder: Callable[[str], str | None] = shutil.which,
     module_finder: Callable[[str], Any] | None = None,
     environment: Mapping[str, str] | None = None,
@@ -87,6 +88,7 @@ def evaluate_readiness(
     checks: list[dict[str, Any]] = []
     selected_module_finder = module_finder or _safe_find_spec
     missing_dependency = False
+    unknown_dependency = False
     missing_config = False
     env = environment if environment is not None else os.environ
     try:
@@ -102,6 +104,11 @@ def evaluate_readiness(
             available = skill in visible_skill_names
             checks.append(_check("skill", skill, available))
             missing_dependency = missing_dependency or not available
+        for mcp in requirements["mcps"]:
+            available = None if mcp_readiness is None else mcp_readiness.get(mcp, False)
+            checks.append(_check("mcp", mcp, available))
+            missing_dependency = missing_dependency or available is False
+            unknown_dependency = unknown_dependency or available is None
         for key in requirements["config"]:
             configured = _configured(key, get_config, env)
             checks.append(_check("config", key, configured))
@@ -122,6 +129,14 @@ def evaluate_readiness(
             checks,
             False,
             ["One or more declared dependencies are missing."],
+        )
+    if unknown_dependency:
+        return _result(
+            UNKNOWN,
+            requirements,
+            checks,
+            False,
+            ["One or more declared dependencies could not be checked passively."],
         )
     if setup_declared or missing_config or status_hint == SETUP_REQUIRED:
         return _result(
@@ -157,8 +172,8 @@ def _result(
     }
 
 
-def _check(kind: str, name: str, available: bool) -> dict[str, Any]:
-    return {"type": kind, "name": name, "available": bool(available)}
+def _check(kind: str, name: str, available: bool | None) -> dict[str, Any]:
+    return {"type": kind, "name": name, "available": available}
 
 
 def _safe_find_spec(module: str) -> Any:

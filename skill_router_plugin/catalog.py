@@ -73,9 +73,16 @@ def scan_catalog(
         listing = _json_object(ctx.dispatch_tool("skills_list", {}))
     except Exception:
         listing = {}
-    listing_available = bool(listing.get("success"))
-    listed = listing.get("skills") if listing_available else []
-    metadata_rows = [row for row in listed if isinstance(row, dict)] if isinstance(listed, list) else []
+    listed = listing.get("skills")
+    listing_available = (
+        listing.get("success") is True
+        and isinstance(listed, list)
+        and all(
+            isinstance(row, dict) and bool(str(row.get("name") or "").strip())
+            for row in listed
+        )
+    )
+    metadata_rows = list(listed) if listing_available else []
     visible_names = {
         str(row.get("name") or "").strip()
         for row in metadata_rows
@@ -89,6 +96,7 @@ def scan_catalog(
         )
     else:
         raw_content, reader_mode = {}, "metadata-only"
+    mcp_readiness = compat.active_mcp_readiness()
     records: list[dict[str, Any]] = []
     for metadata in metadata_rows:
         name = str(metadata.get("name") or "").strip()
@@ -96,13 +104,15 @@ def scan_catalog(
             continue
         description = str(metadata.get("description") or "").strip()[:1000]
         content = raw_content.get(name, "")
-        hash_input = f"{name}\0{description}\0{content}"
+        category = str(metadata.get("category") or "").strip()[:200]
+        hash_input = f"{name}\0{description}\0{category}\0{content}"
         readiness = evaluate_readiness(
             content=content,
             visible_skill_names=visible_names,
             metadata_hints=compat.readiness_hints(metadata),
             get_config=ctx.get_config,
             content_expected=reader_mode == "raw-path-current-hermes",
+            mcp_readiness=mcp_readiness,
         )
         readiness_hash = hashlib.sha256(
             json.dumps(readiness, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -110,7 +120,7 @@ def scan_catalog(
         records.append({
             "name": name,
             "description": description,
-            "category": str(metadata.get("category") or "").strip()[:200],
+            "category": category,
             "tags": [],
             "related_skills": [],
             "content": content,
@@ -129,6 +139,7 @@ def scan_catalog(
         "skills": records,
         "count": len(records),
         "reader_mode": reader_mode,
+        "listing_available": listing_available,
     }
 
 

@@ -81,7 +81,7 @@ def test_sync_deletes_only_previously_owned_stale_mirrors(monkeypatch):
     assert all("user-skill" not in path for _method, path, _body in requests)
 
 
-def test_post_conflict_retries_as_idempotent_put(monkeypatch):
+def test_post_conflict_does_not_claim_or_overwrite_unowned_mirror(monkeypatch):
     bridge = OpenVikingBridge(Ctx())
     methods = []
 
@@ -102,8 +102,35 @@ def test_post_conflict_retries_as_idempotent_put(monkeypatch):
     }
     report = bridge.sync_skills([record], [{"name": "github"}])
 
-    assert report["failed"] == []
-    assert methods == ["GET", "POST", "PUT"]
+    assert report["failed"]
+    assert report["owned_names"] == []
+    assert methods == ["GET", "POST"]
+
+
+def test_preexisting_unowned_mirror_name_is_never_updated_or_claimed(monkeypatch):
+    bridge = OpenVikingBridge(Ctx())
+    mirror_name = bridge._mirror_name("github")
+    methods = []
+
+    def request(method, path, body=None, **kwargs):
+        methods.append(method)
+        if method == "GET":
+            return {"skills": [{"name": mirror_name}]}
+        raise AssertionError("unowned mirror must not be mutated")
+
+    monkeypatch.setattr(bridge, "_request", request)
+    record = {
+        "name": "github",
+        "description": "GitHub",
+        "content": "# GitHub",
+        "content_hash": "abc",
+    }
+
+    report = bridge.sync_skills([record], [{"name": "github"}])
+
+    assert report["failed"] == ["github: mirror-name-conflict"]
+    assert report["owned_names"] == []
+    assert methods == ["GET"]
 
 
 def test_find_maps_only_router_owned_openviking_skills(monkeypatch):

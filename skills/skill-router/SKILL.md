@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Routes every task to the best installed skills.
-version: 0.4.0
+version: 0.5.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -40,6 +40,7 @@ Use the plugin command inside a Hermes conversation:
 
 ```text
 /skill-router status
+/skill-router events 20
 /skill-router refresh
 /skill-router plan
 /skill-router inspect github
@@ -57,8 +58,9 @@ The router itself runs automatically before ordinary user requests. A manual com
 
 | Command | Purpose |
 |---|---|
-| `/skill-router status` | Show profile, catalog hash, analysis time, and failures. |
-| `/skill-router refresh` | Force a catalog scan and queue deep analysis. |
+| `/skill-router status` | Show profile, catalog hash, last skill change, pending refresh, and failures. |
+| `/skill-router events [N]` | Show up to 50 profile-local technical skill-change events. |
+| `/skill-router refresh` | Force a diagnostic catalog scan and queue deep analysis. |
 | `/skill-router plan` | Show compact trigger rules and readiness for indexed skills. |
 | `/skill-router inspect <skill>` | Show cached dependency and setup evidence without secret values. |
 | `/skill-router audit [last\|N]` | Summarize recent routed turns or inspect the latest execution result. |
@@ -93,7 +95,8 @@ Deterministic routing abstains unless an implicit primary reaches `deterministic
 ## Pitfalls
 
 - Do not invent a skill name. Only `skills_list` and the router plan define available skills.
-- Do not assume one profile's plan or audit history applies to another profile. Hermes profiles are intentionally isolated.
+- Do not assume one profile's plan, MCP configuration, events, or audit history applies to another profile. Hermes profiles are intentionally isolated.
+- Do not route directly to MCP servers or tools. Only an installed Hermes skill can be routed; `requirements.mcps` affects that skill's readiness but cannot create semantic relevance.
 - Audit, quality, and shadow-learning outcomes are diagnostic only; they do not enforce `skill_view`, repeat turns, or change real ranking. They measure technical routing execution, not the correctness of Hermes' final domain answer or a skill's domain competence.
 - Never substitute raw auxiliary-model selections for a blocked or failed policy result. The policy is the authoritative recommendation plan.
 - `skill_view` remains allowed by every enforcement mode. If hard enforcement exhausts its bounded block budget or loses reliable turn identity, continue fail-open and diagnose the audit instead of retrying the turn.
@@ -108,7 +111,7 @@ Confirm all of the following:
 1. `/skill-router status` reports the correct Hermes profile.
 2. `Indexed skills` matches the effective skill catalog closely enough to account for disabled, unsupported, or quarantined skills.
 3. `/skill-router recommend <representative task>` returns existing skill names only.
-4. A newly installed or agent-created skill appears after its lifecycle event or after `/skill-router refresh`.
+4. A newly installed or agent-created skill appears automatically after its lifecycle event; a later session/turn scan catches changes without events.
 5. A normal user request receives a `[Skill Router]` context block and Hermes loads the primary skill before execution.
 6. A demo skill with `requirements.skills` injects its usable dependency before the dependent while retaining the dependent as primary.
 7. `/skill-router audit last` reports the final policy recommendation and observed primary load without storing prompt or tool-result content.
