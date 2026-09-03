@@ -4,7 +4,7 @@ An always-on, profile-scoped skill planner for [Hermes Agent](https://github.com
 
 The plugin inventories the effective skills of each Hermes profile, preserves Hermes readiness and dependency policy, and recommends ordered skills before every user turn. Hybrid mode embeds only each skill's name and description through a loopback-only Ollama endpoint, caches catalog vectors per profile, and makes no generative LLM routing call. Hermes still loads selected procedures through its native `skill_view` security and readiness path.
 
-> Status: early community release (`0.6.0`). Test it with your Hermes and Ollama versions before unattended use.
+> Status: early community release (`0.6.1`). Test it with your Hermes and Ollama versions before unattended use.
 
 ## Why this is a plugin plus a skill
 
@@ -18,11 +18,11 @@ A plain `SKILL.md` is loaded on demand. It cannot remain active, observe skill l
 
 1. **Install/enable:** the plugin registers an always-on bounded system-prompt rule, lifecycle hooks, commands, and a `skill_router_planner` auxiliary task.
 2. **Initial plan:** the first new session scans the active profile, creates a deterministic base plan, and queues background reconciliation. Model metadata enrichment occurs only in model routing mode. `refresh` remains a diagnostic fallback rather than an installation step.
-3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering.
+3. **Catalog:** Hermes `skills_list` supplies the effective visible catalog: trusted project skills, profile-local skills, external directories, and enabled plugin skills, subject to Hermes filtering. The qualified `skill-router:skill-router` operational skill remains routable for Router diagnostics; only the obsolete unqualified self alias is excluded.
 4. **Readiness:** declared command, Python-module, skill, MCP-server, and configuration requirements are checked passively during catalog refresh and cached with the plan. No dependency, MCP connection, or setup action is executed.
 5. **Deep analysis:** only `model` mode sends new or changed skill documents to the configured auxiliary model. Hybrid mode makes no generative routing or analysis call.
 6. **Hybrid embeddings:** a loopback-only, proxy-free, no-redirect Ollama adapter embeds only skill name plus description. Profile-local vectors are cached by profile scope, catalog hash, content hash, endpoint, model, and dimension.
-7. **Every task:** an explicitly requested installed skill takes deterministic priority. Otherwise hybrid mode ranks by cosine similarity, adds Top-2 only when the Top-1 minus Top-2 margin is below the configured `0.02`, and retains at most two optional skills. Endpoint, timeout, malformed-response, or cache failures fail open to the strict deterministic router. OpenViking and auxiliary-model modes remain separately available.
+7. **Every task:** a Skill Router meta-request receives deterministic priority for the qualified `skill-router:skill-router` operational workflow, even when the message mentions other skills; an explicit request not to use that workflow is honored. Other explicitly requested installed skills retain deterministic priority. Otherwise hybrid mode ranks by cosine similarity. A semantic winner with no lexical evidence in the current task must also meet `embedding_weak_signal_min_score` (default `0.45`) instead of only the normal `0.35` floor. Top-2 is added only when the Top-1 minus Top-2 margin is below the configured `0.02`, with at most two optional skills. Endpoint, timeout, malformed-response, or cache failures fail open to the strict deterministic router. OpenViking and auxiliary-model modes remain separately available.
 8. **Policy gate:** deterministic validation applies catalog readiness, explicit user requests, alternatives, declared skill dependencies, role normalization, dependency-first ordering, and the configured skill limit. Model output never bypasses this gate.
 9. **Execution guard:** the final policy plan initializes a turn-isolated guard. The default warns only; optional hard modes use `pre_tool_call` to require successful ordered `skill_view` loads before task tools.
 10. **Execution:** a dynamic `[Skill Router]` block tells Hermes to call native `skill_view` for each validated skill before doing the task.
@@ -132,6 +132,7 @@ hermes config set plugins.entries.skill-router.settings.embedding_url http://127
 hermes config set plugins.entries.skill-router.settings.embedding_model qwen3-embedding:0.6b
 hermes config set plugins.entries.skill-router.settings.embedding_dimensions 1024
 hermes config set plugins.entries.skill-router.settings.embedding_keep_alive 5m
+hermes config set plugins.entries.skill-router.settings.embedding_weak_signal_min_score 0.45
 hermes config set plugins.entries.skill-router.settings.embedding_ambiguity_margin 0.02
 hermes config set plugins.entries.skill-router.settings.max_optional_supporting_skills 2
 ```
@@ -316,6 +317,7 @@ plugins:
         embedding_batch_size: 32
         embedding_ambiguity_margin: 0.02
         embedding_min_score: 0.35
+        embedding_weak_signal_min_score: 0.45
         max_audit_entries: 100          # clamped to 10-1000
         learning_mode: shadow           # off | shadow; no active mode
         learning_min_samples: 5         # clamped to 3-100 and audit limit
@@ -361,6 +363,7 @@ Additional limitations:
 - `on_skill_lifecycle` has no `deleted` or `uninstalled` action. Fingerprint scans catch removals later.
 - Hermes' flat skill catalog may cache in-place edits for roughly 30 seconds.
 - An existing/resumed session's system prompt is immutable for prompt-cache safety. Dynamic recommendations still arrive through `pre_llm_call` each turn.
+- Routing receives only the current user message, not conversation history. Short referential follow-ups may therefore abstain under the higher weak-signal floor; Hermes still answers them with its normal conversation context instead of loading an unrelated skill.
 - Hermes bounds `pre_llm_call` callbacks to 30 seconds by default. Router retrieval and model timeouts are capped below that budget; a timeout fails open and Hermes proceeds without router context for that turn.
 - A third-party plugin cannot auto-enable itself; installation requires explicit consent.
 

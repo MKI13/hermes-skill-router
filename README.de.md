@@ -4,7 +4,7 @@ Ein dauerhaft aktiver, profilspezifischer Skill-Planer für [Hermes Agent](https
 
 Das Plugin erfasst die tatsächlich verfügbaren Skills jedes Hermes-Profils, bewahrt Hermes-Readiness und Dependency-Policy und empfiehlt vor jeder Aufgabe passende Skills in der richtigen Reihenfolge. Im Hybridmodus werden ausschließlich Skill-Name und -Beschreibung über einen Loopback-Ollama-Endpunkt eingebettet und profilspezifisch gecacht; ein generatives LLM wird für das Routing nicht aufgerufen. Die ausgewählten Anweisungen werden weiterhin über Hermes `skill_view` geladen.
 
-> Status: frühe Community-Version (`0.6.0`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und Ollama-Versionen testen.
+> Status: frühe Community-Version (`0.6.1`). Vor unbeaufsichtigtem Einsatz mit den eigenen Hermes- und Ollama-Versionen testen.
 
 ## Warum Plugin und Skill kombiniert werden
 
@@ -18,11 +18,11 @@ Eine einzelne `SKILL.md` wird nur bei Bedarf geladen. Sie kann nicht dauerhaft a
 
 1. Das Plugin registriert einen kurzen dauerhaften Systemhinweis, Lifecycle-Hooks, Befehle und den Hilfsmodell-Task `skill_router_planner`.
 2. Die erste neue Session scannt das aktive Profil, erzeugt einen deterministischen Basisplan und stellt den Hintergrundabgleich in die Warteschlange. Eine Anreicherung der Modellmetadaten erfolgt nur im Modell-Routingmodus. `refresh` bleibt ein Diagnose-Fallback und ist kein Installationsschritt.
-3. Hermes liefert den effektiven Katalog aus vertrauenswürdigen Projekt-Skills, lokalen Profil-Skills, externen Verzeichnissen und aktiven Plugin-Skills.
+3. Hermes liefert den effektiven Katalog aus vertrauenswürdigen Projekt-Skills, lokalen Profil-Skills, externen Verzeichnissen und aktiven Plugin-Skills. Der qualifizierte Betriebsskill `skill-router:skill-router` bleibt für Router-Diagnosen routbar; nur der veraltete unqualifizierte Selbst-Alias wird ausgeschlossen.
 4. Deklarierte Befehls-, Python-Modul-, Skill-, MCP-Server- und Konfigurationsanforderungen werden beim Katalog-Refresh passiv geprüft und mit dem Plan gespeichert. Der Router führt weder Setup noch MCP-Verbindungen aus.
-5. Nur neue oder geänderte Skill-Dokumente werden erneut analysiert.
-6. OpenViking erhält profilspezifische Skill-Spiegel und den Plan unter `viking://~/resources/hermes-skill-router/{profil-scope}/plan.md`.
-7. Wenn aktiviert, liefert OpenViking vor jeder Aufgabe semantische Treffer. Das Hermes-Hilfsmodell wählt daraus und aus dem vollständigen Plan null bis fünf existierende Skills samt Reihenfolge. Deterministisches Routing verwendet auch nach Modell-Timeouts und -Fehlern dasselbe strikte No-Skill-Gate.
+5. Nur der Modus `model` sendet neue oder geänderte Skill-Dokumente an das konfigurierte Hilfsmodell. Der Hybridmodus führt weder generative Routing- noch Analyseaufrufe aus.
+6. Im Hybridmodus bettet ein proxyfreier, Redirect-blockierender Loopback-Ollama-Adapter ausschließlich Skill-Name und -Beschreibung ein. Katalogvektoren werden pro Profil und Inhaltsidentität gecacht.
+7. Eine Meta-Anfrage zum Skill Router erhält deterministische Priorität für den qualifizierten Betriebsskill `skill-router:skill-router`, selbst wenn die Nachricht andere Skills erwähnt; ein ausdrücklicher Wunsch, diesen Workflow nicht zu verwenden, wird respektiert. Andere explizit angeforderte Skills behalten ebenfalls deterministische Priorität. Sonst rankt der Hybridmodus per Kosinusähnlichkeit. Fehlt beim Gewinner jeder lexikalische Hinweis in der aktuellen Nachricht, muss er zusätzlich `embedding_weak_signal_min_score` (Standard `0.45`) statt nur `0.35` erreichen. Top-2 wird ausschließlich bei einem Abstand unter `0.02` ergänzt. Embedding-Fehler fallen offen auf das deterministische Routing zurück.
 8. Ein deterministisches Policy Gate prüft Katalog-Readiness, explizite Benutzerwünsche, Alternativen, deklarierte Skill-Abhängigkeiten, Rollen, Dependency-Reihenfolge und das Skill-Limit. Modellausgaben umgehen diese Schicht nicht.
 9. Der finale Policy-Plan initialisiert einen turn-isolierten Execution Guard. Der Standardmodus warnt nur; optionale harte Modi verlangen über `pre_tool_call` erfolgreiche geordnete `skill_view`-Aufrufe vor Task-Tools.
 10. Hermes erhält einen dynamischen `[Skill Router]`-Block und lädt die validierten Skills nativ mit `skill_view`.
@@ -117,6 +117,7 @@ hermes config set plugins.entries.skill-router.settings.embedding_url http://127
 hermes config set plugins.entries.skill-router.settings.embedding_model qwen3-embedding:0.6b
 hermes config set plugins.entries.skill-router.settings.embedding_dimensions 1024
 hermes config set plugins.entries.skill-router.settings.embedding_keep_alive 5m
+hermes config set plugins.entries.skill-router.settings.embedding_weak_signal_min_score 0.45
 hermes config set plugins.entries.skill-router.settings.embedding_ambiguity_margin 0.02
 hermes config set plugins.entries.skill-router.settings.max_optional_supporting_skills 2
 ```
@@ -286,6 +287,7 @@ plugins:
         embedding_batch_size: 32
         embedding_ambiguity_margin: 0.02
         embedding_min_score: 0.35
+        embedding_weak_signal_min_score: 0.45
         max_audit_entries: 100          # begrenzt auf 10-1000
         learning_mode: shadow           # off | shadow; kein active-Modus
         learning_min_samples: 5         # begrenzt auf 3-100 und Audit-Limit
@@ -324,6 +326,7 @@ Zuerst `/skill-router status` ausführen und anschließend `events` prüfen, wen
 - Der Lifecycle-Hook meldet derzeit kein Löschen oder Deinstallieren. Die regelmäßige Katalogprüfung erkennt solche Änderungen später.
 - Änderungen innerhalb einer `SKILL.md` können wegen Hermes-Cachezeiten ungefähr 30 Sekunden verzögert erscheinen.
 - Ein bereits bestehender System-Prompt wird aus Cache-Gründen nicht verändert. Die dynamische Empfehlung wird trotzdem bei jedem Turn über `pre_llm_call` ergänzt.
+- Das Routing erhält nur die aktuelle Benutzernachricht, nicht den Gesprächsverlauf. Kurze rückbezügliche Folgefragen können deshalb unter dem höheren Weak-Signal-Grenzwert ohne Skill-Empfehlung bleiben; Hermes beantwortet sie weiterhin mit seinem normalen Gesprächskontext, statt einen unpassenden Skill zu laden.
 - Hermes begrenzt `pre_llm_call` standardmäßig auf 30 Sekunden. Die Router-Timeouts bleiben darunter; bei Zeitüberschreitung läuft Hermes für diesen Turn ohne Router-Kontext weiter.
 - Native Hermes-Plugins laufen als vertrauenswürdiger Python-Code im Prozess. Quellcode vor dem Aktivieren prüfen.
 

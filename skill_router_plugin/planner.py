@@ -14,8 +14,18 @@ from .policy import detect_explicit_skill_names
 DEFAULT_DETERMINISTIC_MIN_SCORE = 20
 DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE = 24
 DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS = 1
+DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE = 0.45
 MAX_DETERMINISTIC_SUPPORTING_SCORE_GAP = 12
 MIN_STRONG_OPENVIKING_SCORE = 18.0
+_ROUTER_OPERATIONAL_SKILL = "skill-router:skill-router"
+_ROUTER_META_RE = re.compile(r"\bskill[\s-]+router\b", re.IGNORECASE)
+_ROUTER_META_NEGATION_RE = re.compile(
+    r"(?:\b(?:do\s+not|don't|dont)\s+(?:use|load|apply)|\b(?:avoid|without|ohne|vermeide))"
+    r"\s+(?:(?:the|den)\s+)?skill[\s-]+router\b|"
+    r"\bskill[\s-]+router\s+nicht\s+(?:verwenden|benutzen|laden)\b|"
+    r"\b(?:nutze|verwende|benutze|lade)\s+(?:den\s+)?skill[\s-]+router\s+nicht\b",
+    re.IGNORECASE,
+)
 
 _ANALYSIS_SCHEMA = {
     "type": "object",
@@ -170,6 +180,7 @@ def select_skills(
     embedding_scores: dict[str, float] | None = None,
     embedding_ambiguity_margin: float = 0.02,
     embedding_min_score: float = 0.35,
+    embedding_weak_signal_min_score: float = DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE,
 ) -> tuple[list[dict[str, Any]], str]:
     """Select ordered skills with model routing and deterministic fallback."""
     safe_limit = max(1, min(int(limit), 5))
@@ -179,6 +190,17 @@ def select_skills(
         min(int(deterministic_supporting_min_score), 100),
     )
     safe_optional_supporting = max(0, min(int(max_optional_supporting_skills), 4))
+    router_meta = _router_meta_selection(task, entries)
+    if router_meta:
+        return router_meta, "deterministic-router-meta"
+    if _router_meta_is_negated(task):
+        entries = [
+            entry
+            for entry in entries
+            if str(entry.get("name") or "") != _ROUTER_OPERATIONAL_SKILL
+        ]
+        if not detect_explicit_skill_names(task, entries):
+            return [], "deterministic-router-meta-negated"
     if mode in {"hybrid", "embedding"}:
         explicit_names = detect_explicit_skill_names(task, entries)
         if explicit_names:
@@ -192,11 +214,13 @@ def select_skills(
             ), "deterministic-explicit"
         if embedding_scores is not None:
             return _embedding_selection(
+                task,
                 entries,
                 embedding_scores,
                 safe_limit,
                 ambiguity_margin=embedding_ambiguity_margin,
                 min_score=embedding_min_score,
+                weak_signal_min_score=embedding_weak_signal_min_score,
                 max_optional_supporting=safe_optional_supporting,
             ), "embedding"
         return _fallback(
@@ -295,6 +319,38 @@ def select_skills(
     ), "deterministic"
 
 
+def _router_meta_selection(
+    task: str,
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Route Skill Router meta-requests to its own operational skill."""
+    if not _ROUTER_META_RE.search(str(task or "")) or _router_meta_is_negated(task):
+        return []
+    entry = next(
+        (
+            item
+            for item in entries
+            if str(item.get("name") or "") == _ROUTER_OPERATIONAL_SKILL
+        ),
+        None,
+    )
+    if entry is None:
+        return []
+    return [{
+        "name": _ROUTER_OPERATIONAL_SKILL,
+        "role": "primary",
+        "reason": "Direct Skill Router operational request.",
+        "order": 1,
+        "readiness_status": entry.get("readiness_status", "unknown"),
+        "setup_needed": bool(entry.get("setup_needed")),
+        "router_meta_override": True,
+    }]
+
+
+def _router_meta_is_negated(task: str) -> bool:
+    return bool(_ROUTER_META_NEGATION_RE.search(str(task or "")))
+
+
 def _safe_reason(value: Any) -> str:
     text = " ".join(str(value or "Relevant to the requested task.").split())
     return text.replace("[", "(").replace("]", ")")[:300]
@@ -347,12 +403,14 @@ def deterministic_routing_diagnostics(
 
 
 def _embedding_selection(
+    task: str,
     entries: list[dict[str, Any]],
     scores: dict[str, float],
     limit: int,
     *,
     ambiguity_margin: float,
     min_score: float,
+    weak_signal_min_score: float,
     max_optional_supporting: int,
 ) -> list[dict[str, Any]]:
     """Select semantic Top-1 plus an optional ambiguous Top-2."""
@@ -384,6 +442,14 @@ def _embedding_selection(
         threshold = 0.35
     if not math.isfinite(margin):
         margin = 0.02
+    try:
+        weak_threshold = max(threshold, min(1.0, float(weak_signal_min_score)))
+    except (TypeError, ValueError):
+        weak_threshold = max(threshold, DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE)
+    if not math.isfinite(weak_threshold):
+        weak_threshold = max(threshold, DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE)
+    if score_entry(task, ranked[0][2])["relevance_score"] <= 0.0:
+        threshold = weak_threshold
     if ranked[0][0] < threshold:
         return []
     selected = [ranked[0]]

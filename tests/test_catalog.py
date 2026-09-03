@@ -24,12 +24,17 @@ class Compatibility:
         return self.mcp_readiness
 
 
-def test_scan_catalog_reads_effective_skills_without_preprocessing():
+def test_scan_catalog_keeps_qualified_operational_router_skill():
     listing = json.dumps({
         "success": True,
         "skills": [
             {"name": "github", "description": "Manage GitHub work.", "category": "dev"},
-            {"name": "skill-router:skill-router", "description": "self", "category": "plugin"},
+            {"name": "skill-router", "description": "legacy self", "category": "plugin"},
+            {
+                "name": "skill-router:skill-router",
+                "description": "Inspect routing diagnostics.",
+                "category": "plugin",
+            },
         ],
     })
 
@@ -42,14 +47,19 @@ def test_scan_catalog_reads_effective_skills_without_preprocessing():
             return listing
 
     compatibility = Compatibility({
-        "github": "## When to Use\nUse for pull requests and issues.\n## Pitfalls\nAvoid for GitLab."
+        "github": "## When to Use\nUse for pull requests and issues.\n## Pitfalls\nAvoid for GitLab.",
+        "skill-router:skill-router": "## When to Use\nUse for routing diagnostics.",
     }, "raw-path-current-hermes")
 
     catalog = scan_catalog(Ctx(), compatibility)
 
-    assert catalog["count"] == 1
-    assert catalog["skills"][0]["name"] == "github"
+    assert catalog["count"] == 2
+    assert [item["name"] for item in catalog["skills"]] == [
+        "github",
+        "skill-router:skill-router",
+    ]
     assert "Use for pull requests" in catalog["skills"][0]["content"]
+    assert "Use for routing diagnostics" in catalog["skills"][1]["content"]
     assert catalog["reader_mode"] == "raw-path-current-hermes"
     assert len(catalog["catalog_hash"]) == 64
 

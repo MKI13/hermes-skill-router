@@ -1,7 +1,7 @@
 ---
 name: skill-router
-description: Routes every task to the best installed skills.
-version: 0.5.0
+description: Inspect routing plans, readiness, and execution audits.
+version: 0.6.1
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -71,10 +71,13 @@ The router itself runs automatically before ordinary user requests. A manual com
 
 Routing modes are configured under `plugins.entries.skill-router.settings.routing_mode`:
 
+- `hybrid` or `embedding`: use direct local embeddings after deterministic explicit-request detection, with deterministic fail-open;
 - `model`: use OpenViking-ranked candidates and the configured auxiliary model, with deterministic fallback;
 - `deterministic`: use OpenViking scores plus local term matching without a model call.
 
-Both modes pass through the deterministic routing policy. The policy validates readiness, normalizes one primary role, expands declared skill dependencies before their dependent, resolves alternatives, enforces the skill limit, and discards unsafe or invalid selections. It does not semantically rerank the task.
+All modes pass through the deterministic routing policy. The policy validates readiness, normalizes one primary role, expands declared skill dependencies before their dependent, resolves alternatives, enforces the skill limit, and discards unsafe or invalid selections. It does not semantically rerank the task.
+
+Hybrid routing keeps the qualified `skill-router:skill-router` operational skill in its catalog and gives Router meta-requests deterministic priority, even when other skill names are mentioned. Explicit requests not to use the Router workflow are honored. If the semantic winner has no lexical evidence in the current task, it must meet `embedding_weak_signal_min_score` (default `0.45`) rather than only `embedding_min_score` (default `0.35`). Short referential follow-ups can therefore abstain instead of loading an unrelated skill.
 
 Deterministic routing abstains unless an implicit primary reaches `deterministic_min_score` (default `20`) or has strong OpenViking evidence. Exact installed-skill requests bypass that score threshold but not readiness or policy; negated or quoted names do not trigger the bypass. Normal deterministic output contains at most one optional supporting skill; declared dependencies remain separate. Model errors and timeouts use the same gate. A no-match `/skill-router recommend` result includes the top candidate score and required threshold.
 

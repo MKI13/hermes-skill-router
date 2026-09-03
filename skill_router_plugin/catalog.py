@@ -19,7 +19,7 @@ from .readiness import (
     readiness_sort_key,
 )
 
-_ROUTER_SKILLS = {"skill-router", "skill-router:skill-router"}
+_LEGACY_ROUTER_SKILLS = {"skill-router"}
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
 _NEGATION_RE = re.compile(
     r"\b(?:avoid|do\s+not|don't|dont|exclude|kein(?:e[nrms]?)?|nicht|not|ohne|skip|vermeide|without)\b",
@@ -86,7 +86,7 @@ def scan_catalog(
     visible_names = {
         str(row.get("name") or "").strip()
         for row in metadata_rows
-        if str(row.get("name") or "").strip() not in _ROUTER_SKILLS
+        if str(row.get("name") or "").strip() not in _LEGACY_ROUTER_SKILLS
     }
     max_chars = _bounded_int(ctx.get_config("max_skill_chars", 20000), 1000, 200000, 20000)
     if listing_available:
@@ -100,7 +100,7 @@ def scan_catalog(
     records: list[dict[str, Any]] = []
     for metadata in metadata_rows:
         name = str(metadata.get("name") or "").strip()
-        if not name or name in _ROUTER_SKILLS:
+        if not name or name in _LEGACY_ROUTER_SKILLS:
             continue
         description = str(metadata.get("description") or "").strip()[:1000]
         content = raw_content.get(name, "")
@@ -256,7 +256,11 @@ def is_negated_name(task: str, name: str) -> bool:
     normalized = str(task or "").casefold()
     needle = name.casefold()
     for negation in _NEGATION_RE.finditer(normalized):
-        clause = re.split(r"[.;!?]|\b(?:aber|but|however|sondern)\b", normalized[negation.end():], 1)[0]
+        clause = re.split(
+            r"[.;!?]|\b(?:aber|but|however|sondern)\b",
+            normalized[negation.end():],
+            maxsplit=1,
+        )[0]
         index = clause.find(needle)
         if 0 <= index <= 60:
             before = clause[index - 1] if index else ""
@@ -272,7 +276,11 @@ def negated_terms(task: str) -> set[str]:
     normalized = str(task or "").casefold()
     terms: set[str] = set()
     for negation in _NEGATION_RE.finditer(normalized):
-        clause = re.split(r"[.;!?]|\b(?:aber|but|however|sondern)\b", normalized[negation.end():], 1)[0]
+        clause = re.split(
+            r"[.;!?]|\b(?:aber|but|however|sondern)\b",
+            normalized[negation.end():],
+            maxsplit=1,
+        )[0]
         words = tokenize(clause)[:5]
         terms.update(word for word in words if word not in {"bitte", "it", "please", "to", "verwenden"})
     return terms

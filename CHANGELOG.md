@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- Kept the qualified `skill-router:skill-router` operational skill in the routable catalog so Router status and diagnosis requests resolve to their own workflow instead of unrelated skills.
+- Added a configurable `0.45` weak-signal cosine floor when a semantic winner has no lexical evidence in the current message, preventing low-confidence referential follow-ups from forcing a skill.
+- Added deterministic priority for Skill Router meta-requests, even when the message mentions other skills, while honoring explicit requests not to use the Router workflow.
+- Added focused regressions for Router meta-priority and negation, self-routing, low-signal abstention, and lexical-evidence routing.
+
 ## 0.6.0
 
 - Added direct numeric-loopback-only Ollama embedding routing with proxy and redirect refusal, bounded responses, strict vector validation, and configurable five-minute keep-alive.

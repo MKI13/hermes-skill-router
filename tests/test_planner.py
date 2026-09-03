@@ -465,6 +465,162 @@ def test_hybrid_router_uses_semantic_top_two_only_when_margin_is_below_threshold
     assert ctx.llm.calls == []
 
 
+def test_hybrid_router_prioritizes_its_operational_skill_for_router_meta_tasks():
+    entries = [
+        {
+            "name": name,
+            "description": description,
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        }
+        for name, description in (
+            ("skill-router:skill-router", "Inspect routing diagnostics."),
+            ("plan", "Write an implementation plan."),
+            ("hermes-agent", "Configure Hermes Agent."),
+        )
+    ]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        (
+            "Ich sehe das du skill plan liest und dann skill hermes-agent. "
+            "Solltest du nicht zuerst Skill Router lesen?"
+        ),
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={
+            "skill-router:skill-router": 0.1,
+            "plan": 0.9,
+            "hermes-agent": 0.8,
+        },
+    )
+
+    assert method == "deterministic-router-meta"
+    assert [item["name"] for item in selected] == ["skill-router:skill-router"]
+
+    positive_german, positive_german_method = select_skills(
+        FakeCtx([]),
+        "Skill Router verwenden",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.1, "plan": 0.9},
+    )
+
+    assert positive_german_method == "deterministic-router-meta"
+    assert [item["name"] for item in positive_german] == ["skill-router:skill-router"]
+
+    negated, negated_method = select_skills(
+        FakeCtx([]),
+        "Do not use Skill Router. Use plan.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.99, "plan": 0.8},
+    )
+
+    assert negated_method == "deterministic-explicit"
+    assert [item["name"] for item in negated] == ["plan"]
+
+    negated_only, negated_only_method = select_skills(
+        FakeCtx([]),
+        "Do not use Skill Router.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.99, "plan": 0.1},
+    )
+
+    assert negated_only_method == "deterministic-router-meta-negated"
+    assert negated_only == []
+
+    negated_german, negated_german_method = select_skills(
+        FakeCtx([]),
+        "Skill Router nicht verwenden.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.99, "plan": 0.1},
+    )
+
+    assert negated_german_method == "deterministic-router-meta-negated"
+    assert negated_german == []
+
+    without_german, without_german_method = select_skills(
+        FakeCtx([]),
+        "Ohne Skill Router.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.99, "plan": 0.1},
+    )
+
+    assert without_german_method == "deterministic-router-meta-negated"
+    assert without_german == []
+
+
+def test_hybrid_router_requires_stronger_embedding_for_no_lexical_signal():
+    entries = [{
+        "name": "blocked-page-recovery",
+        "description": "Recover pages blocked by WAFs and paywalls.",
+        "use_when": [],
+        "avoid_when": [],
+        "keywords": ["blocked", "page", "waf", "paywall"],
+        "works_with": [],
+        "readiness_status": "ready",
+        "setup_needed": False,
+    }]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        "wo liegt dieser Fehler? warum hat er das gemacht?",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"blocked-page-recovery": 0.3541},
+    )
+
+    assert method == "embedding"
+    assert selected == []
+
+
+def test_hybrid_router_keeps_configured_floor_when_lexical_signal_exists():
+    entries = [{
+        "name": "blocked-page-recovery",
+        "description": "Recover blocked pages.",
+        "use_when": [],
+        "avoid_when": [],
+        "keywords": ["blocked", "page"],
+        "works_with": [],
+        "readiness_status": "ready",
+        "setup_needed": False,
+    }]
+
+    selected, _method = select_skills(
+        FakeCtx([]),
+        "recover a blocked page",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"blocked-page-recovery": 0.40},
+    )
+
+    assert [item["name"] for item in selected] == ["blocked-page-recovery"]
+
+
 def test_hybrid_router_gives_explicit_skill_deterministic_priority():
     entries = [
         {

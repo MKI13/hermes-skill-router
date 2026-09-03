@@ -30,6 +30,7 @@ from .openviking import OpenVikingBridge
 from .planner import (
     DEFAULT_DETERMINISTIC_MIN_SCORE,
     DEFAULT_DETERMINISTIC_SUPPORTING_MIN_SCORE,
+    DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE,
     DEFAULT_MAX_OPTIONAL_SUPPORTING_SKILLS,
     analyze_changed_skills,
     deterministic_routing_diagnostics,
@@ -196,7 +197,8 @@ class SkillRouterRuntime:
             if changed:
                 self.request_deep_refresh("catalog-fingerprint-change")
             snapshot = self._snapshot()
-            stored_entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+            raw_entries = snapshot.get("entries")
+            stored_entries: list[dict[str, Any]] = raw_entries if isinstance(raw_entries, list) else []
             learning_state = self._rebuild_learning()
             routing_mode = self._routing_mode()
             embedding_scores: dict[str, float] | None = None
@@ -253,6 +255,12 @@ class SkillRouterRuntime:
                 ),
                 embedding_min_score=self._float_setting(
                     "embedding_min_score", 0.35, minimum=-1.0, maximum=1.0
+                ),
+                embedding_weak_signal_min_score=self._float_setting(
+                    "embedding_weak_signal_min_score",
+                    DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE,
+                    minimum=-1.0,
+                    maximum=1.0,
                 ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
@@ -728,6 +736,12 @@ class SkillRouterRuntime:
                 embedding_min_score=self._float_setting(
                     "embedding_min_score", 0.35, minimum=-1.0, maximum=1.0
                 ),
+                embedding_weak_signal_min_score=self._float_setting(
+                    "embedding_weak_signal_min_score",
+                    DEFAULT_EMBEDDING_WEAK_SIGNAL_MIN_SCORE,
+                    minimum=-1.0,
+                    maximum=1.0,
+                ),
             )
             policy = self._policy_result(task, selected, entries, max_skills)
             validated = policy["selections"]
@@ -1131,7 +1145,11 @@ class SkillRouterRuntime:
     ) -> dict[str, Any]:
         """Apply policy fail-closed for recommendations and fail-open for Hermes."""
         try:
-            explicit = detect_explicit_skill_names(task, entries)
+            explicit = (
+                []
+                if any(item.get("router_meta_override") is True for item in selected)
+                else detect_explicit_skill_names(task, entries)
+            )
             result = apply_routing_policy(
                 task=task,
                 selected_skills=selected,

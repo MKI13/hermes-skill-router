@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.6.0
+version: 0.6.1
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -73,7 +73,11 @@ config_schema:
   embedding_min_score:
     type: float
     default: 0.35
-    description: Minimum cosine score required for an implicit semantic primary.
+    description: Minimum cosine score required for an implicit semantic primary with lexical evidence.
+  embedding_weak_signal_min_score:
+    type: float
+    default: 0.45
+    description: Higher cosine floor when the semantic winner has no lexical evidence in the current task.
   max_audit_entries:
     type: int
     default: 100

@@ -1499,6 +1499,40 @@ def test_hybrid_runtime_embedding_failure_uses_deterministic_fallback(monkeypatc
     assert "Routing failed for this turn" not in injected
 
 
+def test_hybrid_recommend_prioritizes_router_meta_without_mentioned_skills(monkeypatch):
+    runtime = SkillRouterRuntime(Ctx({"routing_mode": "hybrid"}), Compatibility("full"))
+    runtime.ctx.state.set("router.snapshot", {
+        "catalog_hash": "catalog-v1",
+        "entries": [
+            {
+                "name": name,
+                "description": description,
+                "content_hash": f"{name}-hash",
+                "readiness_status": "ready",
+                "requirements": {"skills": []},
+                "alternatives": [],
+                "policy_metadata_complete": True,
+            }
+            for name, description in (
+                ("skill-router:skill-router", "Inspect routing diagnostics."),
+                ("plan", "Write an implementation plan."),
+                ("hermes-agent", "Configure Hermes Agent."),
+            )
+        ],
+    })
+    monkeypatch.setattr(runtime, "ensure_catalog", lambda force: False)
+
+    output = runtime.command(
+        "recommend Ich sehe das du skill plan liest und skill hermes-agent. "
+        "Solltest du nicht zuerst Skill Router lesen?"
+    )
+
+    assert "Method: deterministic-router-meta" in output
+    assert "skill-router:skill-router (primary, ready)" in output
+    assert "plan (supporting" not in output
+    assert "hermes-agent (supporting" not in output
+
+
 def test_hybrid_recommend_command_uses_embedding_router(monkeypatch):
     runtime = SkillRouterRuntime(Ctx({"routing_mode": "hybrid"}), Compatibility("full"))
     runtime.ctx.state.set("router.snapshot", {
