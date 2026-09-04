@@ -1,11 +1,11 @@
 name: skill-router
-version: 0.6.2
+version: 0.7.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
 author: Hermes Skill Router contributors
 license: MIT
-tags: [skills, routing, openviking, profiles, orchestration]
+tags: [skills, routing, openviking, profiles, orchestration, embeddings, codebase-memory]
 provides_hooks:
   - on_session_start
   - on_skill_lifecycle
@@ -42,6 +42,14 @@ config_schema:
     type: int
     default: 2
     description: Maximum optional supporting skills; declared dependencies are not counted.
+  followup_context_enabled:
+    type: bool
+    default: true
+    description: Conservatively reuse the previous session primary only when normal routing abstains on a short referential follow-up.
+  followup_context_max_sessions:
+    type: int
+    default: 32
+    description: Maximum bounded profile-local session routing-context records.
   embedding_url:
     type: str
     default: "http://127.0.0.1:11436"
@@ -69,7 +77,7 @@ config_schema:
   embedding_ambiguity_margin:
     type: float
     default: 0.02
-    description: Recommend semantic Top-2 when Top-1 minus Top-2 is below this margin.
+    description: Recommend semantic Top-2 when Top-1 minus Top-2 is below this margin and multi-skill evidence exists.
   embedding_min_score:
     type: float
     default: 0.35
@@ -78,6 +86,10 @@ config_schema:
     type: float
     default: 0.45
     description: Higher cosine floor when the semantic winner has no lexical evidence in the current task.
+  performance_history_limit:
+    type: int
+    default: 100
+    description: Maximum bounded profile-local routing latency samples retained for diagnostics.
   max_audit_entries:
     type: int
     default: 100
@@ -121,15 +133,15 @@ config_schema:
   openviking_enabled:
     type: bool
     default: false
-    description: Enable the OpenViking bridge; read and automatic-write gates apply separately.
+    description: Enable the optional OpenViking bridge. v0.7.0 keeps it disabled by default.
   openviking_read_enabled:
     type: bool
     default: true
-    description: Query OpenViking for semantic skill-routing evidence.
+    description: Query OpenViking for semantic skill-routing evidence when the bridge itself is enabled.
   openviking_auto_write_enabled:
     type: bool
     default: true
-    description: Automatically sync skill mirrors and write the generated routing plan.
+    description: Automatically sync skill mirrors and write the generated routing plan when OpenViking is enabled.
   openviking_url:
     type: str
     default: ""

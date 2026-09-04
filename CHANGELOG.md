@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+- Added a bundled `codebase-memory` Hermes skill that declares `requirements.mcps: [codebase-memory]`, keeping MCP servers as capabilities rather than direct routing targets.
+- Added conservative profile- and session-scoped follow-up continuity for short referential turns; previous Primary Skill reuse occurs only after normal routing abstains and remains subject to explicit requests, negation, exclusions, readiness, and policy.
+- Added versioned local embedding routing documents containing name, description, category, tags, `use_when`, keywords, and `works_with`; cache identity now includes embedding document version and routing metadata.
+- Added `skill-router doctor` with passive Hermes/catalog/Codebase-Memory checks and a bounded local embedding health request in hybrid/embedding modes; disabled OpenViking is reported as skipped.
+- Added `skill-router performance` with bounded profile-local catalog, embedding, selection, policy, and total latency samples plus p50/p95 and embedding-cache diagnostics.
+- Added CI synchronization checks across `plugin.yaml`, `pyproject.toml`, bundled skill metadata, `README.md`, and `README.de.md`.
+- Expanded deterministic benchmark reporting with false-positive/supporting precision and p50/p95 latency metrics.
+- Added pinned Hermes compatibility/security checks plus a non-blocking Hermes `main` compatibility job.
+- Kept `openviking_enabled: false` as the default and preserved the existing OpenViking bridge without making it part of the v0.7.0 rollout.
+
 ## 0.6.2
 
 - Required multi-skill intent plus non-negated lexical or declared `works_with` evidence before an ambiguous semantic Top-2 may become an optional supporting skill; negation and `avoid_when` exclusions remain authoritative.
