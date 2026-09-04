@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.6.1
+version: 0.6.2
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.

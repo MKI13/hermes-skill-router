@@ -435,7 +435,7 @@ def test_hybrid_router_uses_semantic_top_two_only_when_margin_is_below_threshold
 
     ambiguous, method = select_skills(
         ctx,
-        "semantic request",
+        "semantic request and secondary workflow",
         entries,
         mode="hybrid",
         limit=5,
@@ -447,7 +447,7 @@ def test_hybrid_router_uses_semantic_top_two_only_when_margin_is_below_threshold
     )
     clear, _ = select_skills(
         ctx,
-        "semantic request",
+        "semantic request and secondary workflow",
         entries,
         mode="hybrid",
         limit=5,
@@ -463,6 +463,186 @@ def test_hybrid_router_uses_semantic_top_two_only_when_margin_is_below_threshold
     assert [item["role"] for item in ambiguous] == ["primary", "supporting"]
     assert [item["name"] for item in clear] == ["alpha"]
     assert ctx.llm.calls == []
+
+
+def test_hybrid_router_keeps_ambiguous_top_two_for_declared_relation():
+    entries = [
+        {
+            "name": "alpha",
+            "description": "First workflow.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": ["beta"],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+        {
+            "name": "beta",
+            "description": "Second workflow.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+    ]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        "analyze the request and summarize the result",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"alpha": 0.80, "beta": 0.781},
+        embedding_ambiguity_margin=0.02,
+        embedding_min_score=0.35,
+        max_optional_supporting_skills=1,
+    )
+
+    assert method == "embedding"
+    assert [item["name"] for item in selected] == ["alpha", "beta"]
+
+
+def test_hybrid_router_drops_negated_ambiguous_supporting_candidate():
+    entries = [
+        {
+            "name": "alpha",
+            "description": "Prepare documents.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+        {
+            "name": "docx",
+            "description": "Create Microsoft Word documents.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": ["document"],
+            "works_with": ["alpha"],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+    ]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        "Prepare the document and do not use docx.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"alpha": 0.80, "docx": 0.79},
+        embedding_ambiguity_margin=0.02,
+        embedding_min_score=0.35,
+        max_optional_supporting_skills=1,
+    )
+
+    assert method == "embedding"
+    assert [item["name"] for item in selected] == ["alpha"]
+
+
+def test_hybrid_router_drops_ambiguous_top_two_without_multi_skill_intent():
+    entries = [
+        {
+            "name": "skill-router:skill-router",
+            "description": "Inspect routing plans, readiness, and execution audits.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+        {
+            "name": "comfyui",
+            "description": "Generate images, video, and audio via diffusion workflows.",
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        },
+    ]
+
+    for task in (
+        "funktioniert jetzt besser? Mach einen kleinen schnellen Test.",
+        "Funktioniert es jetzt besser und kannst du einen kleinen schnellen Test machen?",
+        "Prüfe den Router mit einem kleinen Test.",
+        "Test the router and report whether it works better now.",
+    ):
+        selected, method = select_skills(
+            FakeCtx([]),
+            task,
+            entries,
+            mode="hybrid",
+            limit=5,
+            catalog_chars=4000,
+            embedding_scores={
+                "skill-router:skill-router": 0.4844,
+                "comfyui": 0.4711,
+            },
+            embedding_ambiguity_margin=0.02,
+            embedding_min_score=0.35,
+            max_optional_supporting_skills=1,
+        )
+
+        assert method == "embedding"
+        assert [item["name"] for item in selected] == ["skill-router:skill-router"]
+
+
+def test_hybrid_router_treats_wrong_supporting_skill_report_as_router_meta_request():
+    entries = [
+        {
+            "name": name,
+            "description": description,
+            "use_when": [],
+            "avoid_when": [],
+            "keywords": [],
+            "works_with": [],
+            "readiness_status": "ready",
+            "setup_needed": False,
+        }
+        for name, description in (
+            ("skill-router:skill-router", "Inspect routing diagnostics."),
+            ("comfyui", "Generate images with diffusion workflows."),
+        )
+    ]
+
+    selected, method = select_skills(
+        FakeCtx([]),
+        (
+            "Der bekannte Top-2-Fehler besteht noch: Beim alten Schnelltest wird "
+            "comfyui weiterhin unnötig als Supporting Skill ergänzt."
+        ),
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.1, "comfyui": 0.99},
+    )
+
+    assert method == "deterministic-router-meta"
+    assert [item["name"] for item in selected] == ["skill-router:skill-router"]
+
+    explicit, explicit_method = select_skills(
+        FakeCtx([]),
+        "Use comfyui as the primary skill.",
+        entries,
+        mode="hybrid",
+        limit=5,
+        catalog_chars=4000,
+        embedding_scores={"skill-router:skill-router": 0.1, "comfyui": 0.99},
+    )
+
+    assert explicit_method == "deterministic-explicit"
+    assert [item["name"] for item in explicit] == ["comfyui"]
 
 
 def test_hybrid_router_prioritizes_its_operational_skill_for_router_meta_tasks():

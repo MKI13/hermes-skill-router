@@ -19,6 +19,12 @@ MAX_DETERMINISTIC_SUPPORTING_SCORE_GAP = 12
 MIN_STRONG_OPENVIKING_SCORE = 18.0
 _ROUTER_OPERATIONAL_SKILL = "skill-router:skill-router"
 _ROUTER_META_RE = re.compile(r"\bskill[\s-]+router\b", re.IGNORECASE)
+_ROUTER_ROLE_RE = re.compile(r"\b(?:primary|supporting)[\s-]+skills?\b", re.IGNORECASE)
+_ROUTER_DIAGNOSTIC_RE = re.compile(
+    r"\b(?:wrong|incorrect(?:ly)?|unnecessary|unnecessarily|falsch|fehlerhaft|unnötig|irrtümlich)\b|"
+    r"\btop[\s\-\u2010-\u2015]*2\b|\brouting(?:s)?[\s-]*(?:error|fehler)\b",
+    re.IGNORECASE,
+)
 _ROUTER_META_NEGATION_RE = re.compile(
     r"(?:\b(?:do\s+not|don't|dont)\s+(?:use|load|apply)|\b(?:avoid|without|ohne|vermeide))"
     r"\s+(?:(?:the|den)\s+)?skill[\s-]+router\b|"
@@ -324,7 +330,7 @@ def _router_meta_selection(
     entries: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Route Skill Router meta-requests to its own operational skill."""
-    if not _ROUTER_META_RE.search(str(task or "")) or _router_meta_is_negated(task):
+    if not _router_meta_is_requested(task) or _router_meta_is_negated(task):
         return []
     entry = next(
         (
@@ -349,6 +355,14 @@ def _router_meta_selection(
 
 def _router_meta_is_negated(task: str) -> bool:
     return bool(_ROUTER_META_NEGATION_RE.search(str(task or "")))
+
+
+def _router_meta_is_requested(task: str) -> bool:
+    text = str(task or "")
+    return bool(
+        _ROUTER_META_RE.search(text)
+        or (_ROUTER_ROLE_RE.search(text) and _ROUTER_DIAGNOSTIC_RE.search(text))
+    )
 
 
 def _safe_reason(value: Any) -> str:
@@ -413,7 +427,7 @@ def _embedding_selection(
     weak_signal_min_score: float,
     max_optional_supporting: int,
 ) -> list[dict[str, Any]]:
-    """Select semantic Top-1 plus an optional ambiguous Top-2."""
+    """Select semantic Top-1 plus an intended ambiguous Top-2."""
     known = {
         str(entry.get("name") or ""): entry
         for entry in entries
@@ -457,6 +471,7 @@ def _embedding_selection(
         len(ranked) > 1
         and limit > 1
         and max(0, min(int(max_optional_supporting), 2)) >= 1
+        and _has_grounded_embedding_support(task, ranked[0][2], ranked[1][2])
         and ranked[0][0] - ranked[1][0] < margin
     ):
         selected.append(ranked[1])
@@ -564,6 +579,30 @@ def _fallback(
 def _has_supporting_intent(task: str) -> bool:
     words = set(re.findall(r"[^\W_]{2,}", str(task or "").casefold(), re.UNICODE))
     return bool(words & {"alongside", "and", "mit", "plus", "sowie", "together", "und", "with", "zusammen"})
+
+
+def _has_grounded_embedding_support(
+    task: str,
+    primary: dict[str, Any],
+    candidate: dict[str, Any],
+) -> bool:
+    """Require task intent plus lexical or declared relational support for semantic Top-2."""
+    if not _has_supporting_intent(task):
+        return False
+    breakdown = score_entry(task, candidate)
+    if breakdown["negation"] < 0.0 or breakdown["avoid_when"] < 0.0:
+        return False
+    lexical_evidence = any(
+        breakdown[field] > 0.0
+        for field in ("name", "keywords", "description", "use_when", "exact_name")
+    )
+    primary_name = str(primary.get("name") or "")
+    candidate_name = str(candidate.get("name") or "")
+    related = (
+        candidate_name in set(_string_list(primary.get("works_with")))
+        or primary_name in set(_string_list(candidate.get("works_with")))
+    )
+    return lexical_evidence or related
 
 
 def _string_list(value: Any) -> list[str]:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- Required multi-skill intent plus non-negated lexical or declared `works_with` evidence before an ambiguous semantic Top-2 may become an optional supporting skill; negation and `avoid_when` exclusions remain authoritative.
+- Added a regression for the production prompt that previously attached `comfyui` to an unrelated Skill Router quick test while preserving intended ambiguous Top-2 routing for genuinely combined tasks.
+- Treat reports about a wrong or unnecessary Primary/Supporting Skill as Router diagnostics before explicit skill-name matching, so naming the bad recommendation cannot select it again.
+
 ## 0.6.1
 
 - Kept the qualified `skill-router:skill-router` operational skill in the routable catalog so Router status and diagnosis requests resolve to their own workflow instead of unrelated skills.

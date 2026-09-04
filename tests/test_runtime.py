@@ -1451,7 +1451,7 @@ def test_hybrid_runtime_uses_direct_embeddings_without_openviking_or_llm(monkeyp
     })
 
     injected = runtime.pre_llm_call(
-        user_message="semantic request",
+        user_message="semantic request and secondary workflow",
         task_id="hybrid-task",
         turn_id="hybrid-turn",
         session_id="hybrid-session",
