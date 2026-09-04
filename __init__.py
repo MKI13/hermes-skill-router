@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import MethodType
 
 try:
     from .skill_router_plugin.compat import HermesCompatibility
@@ -21,6 +22,15 @@ def register(ctx) -> None:
     compatibility = HermesCompatibility(ctx)
     runtime = SkillRouterRuntime(ctx, compatibility)
     enhancements = install_production_enhancements(runtime, compatibility)
+
+    # Preserve Hermes' and the existing test contract that a registered runtime
+    # hook is still bound to SkillRouterRuntime while delegating v0.7.0 behavior.
+    def production_pre_llm_call(runtime_self, **kwargs):
+        del runtime_self
+        return enhancements.pre_llm_call(**kwargs)
+
+    runtime.pre_llm_call = MethodType(production_pre_llm_call, runtime)
+
     profile_setup = ProfileSetupCoordinator(ctx, compatibility)
     root = Path(__file__).parent
     router_skill_path = root / "skills" / "skill-router" / "SKILL.md"
