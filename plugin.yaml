@@ -1,5 +1,5 @@
 name: skill-router
-version: 0.7.1
+version: 0.8.0
 manifest_version: 2
 api_version: 1
 description: Keep a profile-specific plan for routing tasks to installed skills.
@@ -133,7 +133,7 @@ config_schema:
   openviking_enabled:
     type: bool
     default: false
-    description: Enable the optional OpenViking bridge. v0.7.1 keeps it disabled by default.
+    description: Enable the optional OpenViking bridge. v0.8.0 keeps it disabled by default.
   openviking_read_enabled:
     type: bool
     default: true
