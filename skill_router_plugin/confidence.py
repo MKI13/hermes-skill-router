@@ -37,6 +37,7 @@ def choose_primary(
     Rules:
     - Explicit candidates always win if they meet the minimum score.
     - Otherwise the top relevant candidate wins by default.
+    - Equal scores preserve the incoming routing order.
     - If the top candidate is UNKNOWN and a READY candidate is almost as relevant,
       prefer READY within ``ready_fallback_margin``.
     - Never use readiness alone to make an irrelevant candidate executable.
@@ -46,7 +47,7 @@ def choose_primary(
     high_margin = max(0.0, float(high_confidence_margin))
     ranked = sorted(
         (candidate for candidate in candidates if float(candidate.score) >= minimum),
-        key=lambda candidate: (-float(candidate.score), candidate.name.casefold()),
+        key=lambda candidate: -float(candidate.score),
     )
     if not ranked:
         return ConfidenceDecision(None, "none", False, "No candidate met the minimum relevance score.")
