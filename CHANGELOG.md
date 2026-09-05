@@ -8,7 +8,12 @@
 - Added pipeline, reload/finalization, profile/session isolation, bounded history, privacy, malformed-input, and unchanged-scoring regression tests. Updated the old free-text audit assertion to distinguish an exact forbidden reason field from the new allowlisted fallback_reason code.
 - Aligned previously stale 0.8.0 package/manifest/skill/runtime metadata with the actual 0.11.0 development milestone. Added a canonical Python runtime version and regression checks across distributed metadata and current documentation.
 - Updated both READMEs and the operational skill. Clarified that diagnostic catalog refreshes may update Router-owned caches without applying profile configuration or gateway changes; this is not a guarantee of zero file writes.
-- No live Hermes-profile validation, main merge, release, gateway changes, active learning, or OpenViking activation is claimed by this milestone. The isolated-profile acceptance gate remains pending.
+- Fixed false-positive Codebase Memory readiness: Canary now requires an explicitly ready skill with consistent setup/policy metadata, not merely a skill that is neither broken nor disabled. Doctor and rollout preflight also distinguish available from ready. A ready candidate can be found even when an unusable referencing skill appears first.
+- Validate raw routing/enforcement/learning modes and boolean flags before runtime fallback normalization can conceal invalid configuration. Diagnostics report BLOCKED without echoing invalid configuration values; runtime fallback behavior is unchanged.
+- Require a valid catalog snapshot/hash for diagnostics. Malformed MCP requirements neither crash diagnostics nor imply readiness.
+- Canary now validates the follow-up selection through the actual policy gate and cannot report PASS when that gate rejects the plan. Its output explicitly labels MCP readiness as configuration-only, not a live MCP or local-model test.
+- Added 45 pre-merge regression cases. The correction passed all 515 repository tests plus the existing routing benchmark, version/config checks and plugin scans before documentation finalization.
+- Repository integration and live acceptance are separate: the owner requested a repository-only merge after error checking while deferring the GEEKOM test. No live Hermes-profile validation, release, gateway changes, active learning or OpenViking activation is claimed. Isolated-profile validation remains required before production rollout.
 
 ## 0.10.0 — Development milestone, unreleased
 
