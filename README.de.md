@@ -2,7 +2,7 @@
 
 Ein dauerhaft aktiver, profilgetrennter Skill-Planer für Hermes Agent mit deterministischem Routing, lokalen Ollama-Embeddings, konservativem Folgekontext, passiven Readiness-Prüfungen, Audit/Quality und optionaler OpenViking-Unterstützung.
 
-> Status: Community Release Candidate **v0.7.0**. Für den empfohlenen v0.7.0-Rollout bleibt OpenViking **standardmäßig deaktiviert**.
+> Status: Community Release Candidate **v0.7.1**. Für den empfohlenen v0.7.1-Rollout bleibt OpenViking **standardmäßig deaktiviert**.
 
 ## Zielarchitektur
 
@@ -20,9 +20,10 @@ User-Aufgabe
 
 Der Router macht aus MCP-Servern niemals direkt routbare Skills. MCP-basierte Workflows werden über normale Hermes Skills mit `requirements.mcps` angebunden.
 
-## Neu in v0.7.0
+## Neu in v0.7.1
 
 - Gebündelter `codebase-memory` Skill für den MCP-Identifier `codebase-memory`.
+- Der Canary meldet Codebase Memory nur noch dann als PASS, wenn sowohl Routing-Skill als auch der aktive Profil-MCP `codebase-memory` bereit sind.
 - Konservatives Follow-up-Routing für kurze Nachrichten wie „mach weiter“, „korrigiere das“, „teste es“ oder „jetzt committen“.
 - Der Folgekontext speichert nur Routing-Metadaten – keine Prompts, Antworten, Tool-Payloads, Dateien oder Zugangsdaten.
 - Reichere, versionierte lokale Embedding-Dokumente aus Name, Beschreibung, Kategorie, Tags, `use_when`, Keywords und `works_with`.
@@ -42,7 +43,7 @@ Ein einzelnes `SKILL.md` kann nicht dauerhaft aktiv bleiben und keine Hermes-Lif
 - Python 3.11 oder neuer.
 - Für Hybrid-Routing: lokaler Ollama-kompatibler `/api/embed`-Endpunkt auf einer numerischen Loopback-Adresse.
 - Für Codebase Memory: MCP-Server im aktiven Profil mit dem exakten Hermes-Konfigurationsschlüssel `codebase-memory`.
-- OpenViking ist optional und für den empfohlenen v0.7.0-Rollout nicht erforderlich.
+- OpenViking ist optional und für den empfohlenen v0.7.1-Rollout nicht erforderlich.
 
 ## Installation
 
@@ -70,7 +71,7 @@ hermes skill-router profiles --sync
 
 Profile bleiben physisch und logisch getrennt; Router-State wird nicht zwischen Profilen kopiert.
 
-## Empfohlene v0.7.0-Konfiguration
+## Empfohlene v0.7.1-Konfiguration
 
 ```yaml
 plugins:
@@ -94,7 +95,7 @@ Fällt das lokale Embedding aus, verwendet Hybrid-Routing den deterministischen 
 
 Die Sicherheitsgrenze bleibt erhalten: nur numerisches Loopback-HTTP, keine URL-Credentials/Proxies/Redirects, begrenzte Antwortgröße und Timeouts, exakte Vektordimension, endliche nicht-leere Vektoren, profilgetrennter Cache und deterministischer Fallback.
 
-v0.7.0 verwendet `EMBEDDING_DOCUMENT_VERSION = 2`. Der Vektor-Cache berücksichtigt das Routing-Dokumentformat und relevante Skill-Metadaten, damit veraltete Vektoren nicht still wiederverwendet werden.
+v0.7.1 verwendet `EMBEDDING_DOCUMENT_VERSION = 2`. Der Vektor-Cache berücksichtigt das Routing-Dokumentformat und relevante Skill-Metadaten, damit veraltete Vektoren nicht still wiederverwendet werden.
 
 ## Codebase Memory
 
@@ -109,6 +110,8 @@ requirements:
 Verwenden für Repository-Struktur, Architektur, Funktionen/Klassen/Symbole, Implementierungs-Suche, Abhängigkeiten, Referenzen und Impact-Analyse vor Codeänderungen. Nicht verwenden für normale E-Mails, Übersetzungen, Web-Recherche, Kalender, Rechnungen oder andere Aufgaben ohne Codebezug.
 
 Der Router startet oder verändert den MCP nicht. Ist der MCP aktiv, aber kein routbarer Skill referenziert ihn, meldet `skill-router doctor` eine Warnung.
+
+Der v0.7.1-Canary behandelt Codebase Memory nur dann als vollständig bereit, wenn sowohl der Routing-Skill als auch der MCP im aktiven Profil bereit sind. Fehlt einer von beiden, meldet der Canary WARN und überspringt die Codebase-Memory-Follow-up-Prüfungen.
 
 ## Follow-up-Routing
 
@@ -179,7 +182,7 @@ Status bleiben `ready`, `unknown`, `setup_required`, `dependency_missing`, `brok
 
 ## Policy, Enforcement, Audit, Quality, Learning
 
-Die deterministische Policy bleibt für alle Routing-Modi autoritativ. Enforcement-Modi: `off`, `warn`, `primary`, `all`; Standard `warn`. Audit/Quality bewerten technische Routing-Ausführung, nicht die fachliche Richtigkeit der Antwort. Learning-Modi: `off`, `shadow`; v0.7.0 besitzt bewusst kein aktives selbstveränderndes Routing.
+Die deterministische Policy bleibt für alle Routing-Modi autoritativ. Enforcement-Modi: `off`, `warn`, `primary`, `all`; Standard `warn`. Audit/Quality bewerten technische Routing-Ausführung, nicht die fachliche Richtigkeit der Antwort. Learning-Modi: `off`, `shadow`; v0.7.1 besitzt bewusst kein aktives selbstveränderndes Routing.
 
 ## OpenViking
 
