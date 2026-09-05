@@ -45,7 +45,7 @@ def render_skill_inspection(snapshot: Mapping[str, Any], skill_name: str) -> str
         lines.extend(["", "Setup required:"])
         lines.extend(_item_lines(setup))
 
-    # Backward-compatible evidence for snapshots created before readiness_version=2.
+    # Preserve the legacy evidence format for old snapshots and existing operators.
     if not (missing or unknown or setup):
         checks = entry.get("dependency_checks")
         checks = checks if isinstance(checks, list) else []
@@ -54,15 +54,27 @@ def render_skill_inspection(snapshot: Mapping[str, Any], skill_name: str) -> str
             for check in checks[:50]:
                 if not isinstance(check, dict):
                     continue
-                kind = _safe_text(check.get("type") or "dependency")
+                kind = _safe_text(check.get("type") or "dependency").replace("_", " ")
                 name = _safe_text(check.get("name") or "unknown")
                 state = str(check.get("state") or "").strip()
                 if not state:
                     available = check.get("available")
                     state = "available" if available is True else "missing" if available is False else "unknown"
-                lines.append(f"- {kind}: {name} [{state[:40]}]")
+                lines.append(f"{kind} {name}: {state[:40]}")
         else:
-            lines.append("- none declared")
+            lines.append("none declared")
+
+        requirements = entry.get("requirements") if isinstance(entry.get("requirements"), dict) else {}
+        required_skills = requirements.get("skills") if isinstance(requirements.get("skills"), list) else []
+        alternatives = entry.get("alternatives") if isinstance(entry.get("alternatives"), list) else []
+        if required_skills:
+            lines.extend(["", "Required skills:"])
+            lines.extend(f"- {_safe_text(name)}" for name in required_skills[:20])
+        if alternatives:
+            lines.extend(["", "Alternatives:"])
+            lines.extend(f"- {_safe_text(name)}" for name in alternatives[:20])
+
+        lines.extend(["", f"Setup needed: {'true' if entry.get('setup_needed') else 'false'}"])
 
     reasons = entry.get("readiness_reasons")
     if isinstance(reasons, list):
@@ -82,7 +94,7 @@ def _safe_items(value: Any) -> list[dict[str, str]]:
     for item in value[:50]:
         if not isinstance(item, Mapping):
             continue
-        kind = _safe_text(item.get("type") or "dependency")
+        kind = _safe_text(item.get("type") or "dependency").replace("_", " ")
         name = _safe_text(item.get("name") or "unknown")
         output.append({"type": kind, "name": name})
     return output
