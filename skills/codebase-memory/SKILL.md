@@ -1,7 +1,7 @@
 ---
 name: codebase-memory
 description: Inspect indexed source code, repository structure, architecture, symbols, and dependencies through the configured Codebase Memory MCP server before planning code changes.
-version: 0.7.0
+version: 0.7.1
 author: Hermes Skill Router contributors
 license: MIT
 requirements:
