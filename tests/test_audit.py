@@ -333,7 +333,11 @@ def test_prompt_secrets_tool_results_and_extra_arguments_are_not_persisted():
     persisted = repr(ctx.state.get("router.audit"))
     assert secret not in persisted
     assert "tool output" not in persisted
-    assert "reason" not in persisted
+    # Free-form selection reasons must remain absent. The separate, allowlisted
+    # fallback_reason field is metadata, not a stored model explanation.
+    assert "'reason':" not in persisted
+    assert "not persisted" not in persisted
+    assert load_entry(ctx)["routing_telemetry"]["fallback_reason"] == ""
 
 
 def test_finalized_audit_persists_versioned_quality_with_dependency_order():

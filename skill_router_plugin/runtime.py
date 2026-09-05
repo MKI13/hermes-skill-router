@@ -38,6 +38,7 @@ from .planner import (
 )
 from .policy import apply_routing_policy, detect_explicit_skill_names
 from .profile_identity import legacy_audit_matches_profile, resolve_profile_identity
+from .telemetry import telemetry_from_policy, telemetry_lines
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -299,6 +300,7 @@ class SkillRouterRuntime:
             actual_primary=str(shadow.get("actual_primary") or ""),
             shadow_primary=str(shadow.get("shadow_primary") or ""),
             shadow_changed=bool(shadow.get("shadow_changed")),
+            telemetry=telemetry_from_policy(policy),
         )
         self._rebuild_learning()
 
@@ -637,7 +639,10 @@ class SkillRouterRuntime:
                 return learning_last(state)
             if detail:
                 return learning_skill(state, detail)
-            return learning_summary(state, self._learning_mode())
+            return (
+                learning_summary(state, self._learning_mode())
+                + "\n\n" + self.audit.telemetry_summary_text()
+            )
         if action == "quality":
             detail = args[1].casefold() if len(args) > 1 else ""
             if detail == "last":
@@ -751,7 +756,10 @@ class SkillRouterRuntime:
                 entries,
                 self._rebuild_learning(),
             )
-            lines = [f"Method: {method}", f"Policy: {policy['policy_status']}", ""]
+            lines = [
+                f"Method: {method}", f"Policy: {policy['policy_status']}",
+                *telemetry_lines(telemetry_from_policy(policy)), "",
+            ]
             if validated:
                 lines.extend(
                     f"{item['order']}. {item['name']} ({item['role']}, "

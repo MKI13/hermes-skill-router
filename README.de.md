@@ -1,10 +1,10 @@
 # Hermes Skill Router
 
-Ein dauerhaft aktiver, profilgetrennter Skill-Planer für Hermes Agent mit deterministischem Routing, lokalen Ollama-Embeddings, konservativem Folgekontext, passiven Readiness-Prüfungen, Audit/Quality und optionaler OpenViking-Unterstützung.
+Ein dauerhaft aktiver, profilgetrennter Skill-Planer für Hermes Agent mit deterministischem Routing, optionalen lokalen Ollama-Embeddings, konservativem Folgekontext, Readiness-Prüfungen, Audit/Quality und optionaler OpenViking-Unterstützung.
 
-> Status: Community Release Candidate **v0.7.1**. Für den empfohlenen v0.7.1-Rollout bleibt OpenViking **standardmäßig deaktiviert**.
+> **Entwicklungsstand v0.11.0 — unveröffentlicht.** Die Änderungen dieses Branches sind noch nicht im vorgesehenen isolierten Hermes-Profil mit lokalem Modell geprüft. Eine grüne CI ist keine Produktionsfreigabe. OpenViking bleibt **standardmäßig deaktiviert**.
 
-## Zielarchitektur
+## Architektur
 
 ```text
 User-Aufgabe
@@ -13,65 +13,58 @@ User-Aufgabe
      -> optional lokale Embedding-Ähnlichkeit
      -> konservativer Session-Folgekontext
      -> Readiness + Dependency Policy
+     -> kompakte Entscheidungsmetadaten
   -> Hermes skill_view
   -> ausgewählter Skill
   -> MCP / Tools dieses Skills
 ```
 
-Der Router macht aus MCP-Servern niemals direkt routbare Skills. MCP-basierte Workflows werden über normale Hermes Skills mit `requirements.mcps` angebunden.
+Hermes bleibt die ausführende Instanz. Der Router empfiehlt normale Hermes-Skills; er macht aus MCP-Servern keine direkt routbaren Skills. MCP-basierte Verfahren deklarieren `requirements.mcps`. Hermes lädt die ausgewählten Verfahren über `skill_view`, nicht als kopierte ausführbare Skill-Dokumente im Prompt.
 
-## Neu in v0.7.1
+Enthalten sind das native `skill-router`-Plugin, der operative Skill `skill-router:skill-router` und `skill-router:codebase-memory` für den exakten MCP-Konfigurationsschlüssel `codebase-memory` im aktiven Profil.
 
-- Gebündelter `codebase-memory` Skill für den MCP-Identifier `codebase-memory`.
-- Der Canary meldet Codebase Memory nur noch dann als PASS, wenn sowohl Routing-Skill als auch der aktive Profil-MCP `codebase-memory` bereit sind.
-- Konservatives Follow-up-Routing für kurze Nachrichten wie „mach weiter“, „korrigiere das“, „teste es“ oder „jetzt committen“.
-- Der Folgekontext speichert nur Routing-Metadaten – keine Prompts, Antworten, Tool-Payloads, Dateien oder Zugangsdaten.
-- Reichere, versionierte lokale Embedding-Dokumente aus Name, Beschreibung, Kategorie, Tags, `use_when`, Keywords und `works_with`.
-- `hermes skill-router doctor` / `/skill-router doctor` für sichere Gesamtdiagnose.
-- `hermes skill-router performance` / `/skill-router performance` für begrenzte lokale Latenzmetriken.
-- CI-Prüfung, dass `plugin.yaml`, `README.md` und `README.de.md` dieselben Konfigurationsschlüssel und Defaults dokumentieren.
-- OpenViking Read/Write-Schalter bleiben erhalten; `openviking_enabled` bleibt standardmäßig `false`.
+## Aktueller Entwicklungsumfang
 
-## Warum Plugin plus Skills
+Dieser Branch verbindet Rollout-Preflight, Readiness 2.0, Confidence-basierte Policy-Auswahl und Routing Decision Telemetry 2.0. Das sind Entwicklungsmeilensteine, keine Behauptung mehrerer veröffentlichter Produktionsversionen.
 
-Ein einzelnes `SKILL.md` kann nicht dauerhaft aktiv bleiben und keine Hermes-Lifecycle-Ereignisse beobachten. Das Repository enthält deshalb das native Router-Plugin, den operativen `skill-router:skill-router` Skill und den `skill-router:codebase-memory` Skill. Hermes lädt ausgewählte Verfahren weiterhin ausschließlich über `skill_view`.
+Readiness unterscheidet fehlende Commands, Python-Module, andere Skills, MCP-Konfigurationen und erforderliche Konfigurationsschlüssel. `inspect` gruppiert fehlende und ungeprüfte Abhängigkeiten, Setup-Anforderungen und die Router-Empfehlung. Doctor ergänzt eine begrenzte Zusammenfassung statt einer unübersichtlichen Gesamtliste.
+
+Der Confidence-Vergleich der Policy kann einen deutlich relevanteren `unknown`-Primary beibehalten oder einen ähnlich relevanten `ready`-Kandidaten vorziehen. Explizite Benutzerwünsche und die vorhandenen Sicherheits-/Abhängigkeitsprüfungen bleiben maßgeblich. Confidence ist eine Routing-Heuristik, keine kalibrierte Wahrscheinlichkeit und kein Ausführungsnachweis.
+
+Die Telemetrie ist jetzt über **Policy -> Runtime -> Audit** verbunden. `recommend`, `audit`, `quality` und die allgemeine `learning`-Zusammenfassung zeigen diese Beobachtungen an. Routing-Scores, Quality-Bewertung und Shadow-Learning-Gewichte werden dadurch nicht verändert.
 
 ## Voraussetzungen
 
-- Hermes Agent mit den benötigten Plugin-Hooks.
-- Aktiviertes Hermes-`skills`-Toolset.
-- Python 3.11 oder neuer.
-- Für Hybrid-Routing: lokaler Ollama-kompatibler `/api/embed`-Endpunkt auf einer numerischen Loopback-Adresse.
-- Für Codebase Memory: MCP-Server im aktiven Profil mit dem exakten Hermes-Konfigurationsschlüssel `codebase-memory`.
-- OpenViking ist optional und für den empfohlenen v0.7.1-Rollout nicht erforderlich.
+- Hermes Agent mit den verwendeten nativen Plugin-Hooks: `on_session_start`, `pre_llm_call`, `pre_tool_call`, `post_tool_call`, `post_llm_call` und Lifecycle-Unterstützung, soweit verfügbar.
+- Aktiviertes Hermes-`skills`-Toolset und Python 3.11 oder neuer.
+- Für Hybrid/Embedding: lokaler Ollama-kompatibler `/api/embed`-Endpunkt auf numerischer Loopback-Adresse.
+- Für Codebase Memory: MCP-Konfiguration im aktiven Profil mit dem exakten Schlüssel `codebase-memory`.
+- OpenViking bleibt optional; für die empfohlene Konfiguration ist es nicht erforderlich.
 
-## Installation
+Capabilities werden erkannt, nicht aus einer Versionsnummer abgeleitet. CI führt Repository-Tests und Plugin-Scans gegen gepinnte Hermes-Revisionen sowie einen informativen aktuellen `main`-Scan aus. Diese Scans ersetzen keinen echten Hermes-Integrationstest.
 
-Bevorzugt über Hermes:
+## Installation und Profilgrenzen
 
-```text
-Installiere den Skill Router aus MKI13/hermes-skill-router.
-```
-
-Terminal:
+Eine Installation ohne Ref verwendet den Standardbranch, nicht diesen Entwicklungsbranch:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
-hermes skill-router setup
-hermes skill-router setup --dry-run
-hermes skill-router setup --apply
-hermes skill-router profiles
 ```
 
-Neue, entfernte oder umbenannte Profile:
+Entwicklungstests benötigen einen ausdrücklich geprüften Commit und ein bereits vorhandenes isoliertes Testprofil. Zuerst dessen Konfiguration prüfen und den Router-Zustand sichern:
 
 ```bash
-hermes skill-router profiles --sync
+hermes --profile <test-profil> plugins install MKI13/hermes-skill-router --ref <gepruefter-commit-sha> --enable
+hermes --profile <test-profil> skill-router setup --dry-run --target-profile <test-profil>
 ```
 
-Profile bleiben physisch und logisch getrennt; Router-State wird nicht zwischen Profilen kopiert.
+Nicht durch ein produktives Profil ersetzen. Den Setup-Plan vor einem getrennten `setup --apply` prüfen. Die Dokumentation ist keine Freigabe für Profiländerungen, Gateway-Neustarts, Merge, Release oder einen Rollout auf weitere Profile.
 
-## Empfohlene v0.7.1-Konfiguration
+`profiles` dient der Übersicht; `profiles --sync` und `setup --apply` sind ausdrückliche Schreiboperationen. Setup verwendet Hermes-Profilmechanismen statt kopierter oder verlinkter Profilzustände. Neue Skills werden über Lifecycle-Ereignisse und begrenztes Rescanning erkannt; ein neuer MCP allein ist noch kein routbarer Skill.
+
+## Konservative Konfiguration
+
+Mit deterministischem Routing beginnen und OpenViking pausiert lassen:
 
 ```yaml
 plugins:
@@ -79,62 +72,33 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: hybrid
+        routing_mode: deterministic
         enforcement_mode: warn
         learning_mode: shadow
         followup_context_enabled: true
-        embedding_url: http://127.0.0.1:11436
-        embedding_model: qwen3-embedding:0.6b
-        embedding_dimensions: 1024
         openviking_enabled: false
 ```
 
-Fällt das lokale Embedding aus, verwendet Hybrid-Routing den deterministischen Fallback.
-
-## Lokale Embeddings
-
-Die Sicherheitsgrenze bleibt erhalten: nur numerisches Loopback-HTTP, keine URL-Credentials/Proxies/Redirects, begrenzte Antwortgröße und Timeouts, exakte Vektordimension, endliche nicht-leere Vektoren, profilgetrennter Cache und deterministischer Fallback.
-
-v0.7.1 verwendet `EMBEDDING_DOCUMENT_VERSION = 2`. Der Vektor-Cache berücksichtigt das Routing-Dokumentformat und relevante Skill-Metadaten, damit veraltete Vektoren nicht still wiederverwendet werden.
-
-## Codebase Memory
-
-Codebase Memory wird nicht als MCP direkt geroutet, sondern über den gebündelten Skill:
+Nach Prüfung des lokalen Endpunkts ist semantisches Routing optional möglich:
 
 ```yaml
-requirements:
-  mcps:
-    - codebase-memory
+routing_mode: hybrid
+embedding_url: http://127.0.0.1:11436
+embedding_model: qwen3-embedding:0.6b
+embedding_dimensions: 1024
 ```
 
-Verwenden für Repository-Struktur, Architektur, Funktionen/Klassen/Symbole, Implementierungs-Suche, Abhängigkeiten, Referenzen und Impact-Analyse vor Codeänderungen. Nicht verwenden für normale E-Mails, Übersetzungen, Web-Recherche, Kalender, Rechnungen oder andere Aufgaben ohne Codebezug.
+Der Beispiel-Endpunkt muss zum tatsächlichen lokalen Dienst passen. Deterministisches Routing benötigt ihn nicht. Bei einem Embedding-Ausfall greift im laufenden Betrieb der deterministische Fallback; für den Hybrid-/Embedding-Preflight muss der konfigurierte Endpunkt den Health Check bestehen.
 
-Der Router startet oder verändert den MCP nicht. Ist der MCP aktiv, aber kein routbarer Skill referenziert ihn, meldet `skill-router doctor` eine Warnung.
+## Kommandos und Nebenwirkungen
 
-Der v0.7.1-Canary behandelt Codebase Memory nur dann als vollständig bereit, wenn sowohl der Routing-Skill als auch der MCP im aktiven Profil bereit sind. Fehlt einer von beiden, meldet der Canary WARN und überspringt die Codebase-Memory-Follow-up-Prüfungen.
-
-## Follow-up-Routing
-
-Beispiel:
-
-```text
-Analysiere das Repository und finde die Implementierung.
--> PRIMARY: codebase-memory
-
-Jetzt korrigiere es.
-```
-
-Der vorherige Primary Skill darf nur wiederverwendet werden, wenn die Nachricht kurz und referenziell ist, das normale Routing keinen Skill gewählt hat, kein anderer Skill explizit verlangt wird, der vorherige Skill weiterhin verwendbar ist, keine Negation/`avoid_when` greift und die normale Policy das Ergebnis akzeptiert.
-
-Ein Themenwechsel wie „Schreib jetzt eine E-Mail an den Kunden“ übernimmt Codebase Memory nicht.
-
-Gespeichert werden nur ein gehashter Session-Key, vorheriger Primary/Supporting Skill, Routing-Kategorie, Policy-Status und Zeitstempel – keine Prompt- oder Antworttexte.
-
-## Kommandos
+Innerhalb von Hermes:
 
 ```text
 /skill-router status
 /skill-router doctor
+/skill-router rollout-check
+/skill-router canary
 /skill-router performance
 /skill-router events 20
 /skill-router refresh
@@ -147,25 +111,57 @@ Gespeichert werden nur ein gehashter Session-Key, vorheriger Primary/Supporting 
 /skill-router recommend prüfe dieses Repository und finde die Implementierung
 ```
 
-Terminal-Kommandos verwenden `hermes skill-router ...`.
+Terminal-Kommandos verwenden `hermes --profile <profil> skill-router ...`; CLI-Refresh unterstützt zusätzlich `refresh --wait`.
 
-### Doctor
+`audit`, `quality` und die allgemeine `learning`-Zusammenfassung lesen vorhandene Beobachtungen. `recommend` zeigt eine Beispielentscheidung, ohne einen Ausführungs-Audit-Eintrag anzulegen. Kommandos mit Katalogerkennung können **Router-eigene Caches und Zustände aktualisieren**; `recommend` kann zusätzlich den abgeleiteten Shadow-Zustand neu berechnen. Doctor, Canary und Preflight sind deshalb keine Garantie für null Dateischreibvorgänge. Sie ändern keine Profilkonfiguration, installieren keine Skills/MCPs und starten keine Gateways. In Hybrid/Embedding sind begrenzte Loopback-Health-Anfragen möglich.
 
-`doctor` prüft Hermes-Capabilities, Skill-Katalog, Policy/Audit/Quality/Learning, lokale Embeddings im passenden Routing-Modus sowie Codebase-Memory-MCP und -Skill. Secrets und vollständige interne Pfade werden nicht ausgegeben.
+### Rollout-Preflight
 
-Bei pausiertem OpenViking:
+```bash
+hermes --profile <test-profil> skill-router rollout-check
+hermes --profile <test-profil> skill-router doctor
+hermes --profile <test-profil> skill-router canary
+```
+
+`rollout-check` liefert `READY`, `REVIEW` oder `BLOCKED`. Geprüft werden kritische Hermes-Capabilities, Katalog/Hash, Routing-/Enforcement-/Learning-Einstellungen, Folgekontext, notwendige Embedding-Health-Checks, Codebase-Memory-Konfiguration/Skill und pausiertes OpenViking.
+
+`READY` erlaubt kontrolliertes Testen, bestätigt aber keinen echten Ausführungstest und erlaubt keine automatischen Änderungen anderer Profile. `REVIEW` verlangt eine Prüfung der Warnungen; `BLOCKED` kennzeichnet einen harten Preflight-Fehler.
+
+### Doctor und Canary
+
+Doctor liefert `PASS`, `WARN` oder `BLOCKED`. Die Readiness-Zusammenfassung nennt höchstens acht auffällige Skills; Details werden über `inspect` abgerufen.
 
 ```text
 SKIP    OpenViking disabled by configuration
 ```
 
-Gesamtstatus: `PASS`, `WARN` oder `BLOCKED`.
+Der Codebase-Memory-Canary verlangt einen verfügbaren Routing-Skill und einen konfigurierten/aktivierten MCP. Fehlende MCP-Readiness führt zu WARN und übersprungenen zugehörigen Kontinuitätstests. Passive MCP-Erkennung ist kein echter RPC-, Such- oder Ende-zu-Ende-Ausführungstest.
 
 ### Performance
 
-Gespeichert werden ausschließlich begrenzte numerische Werte `catalog_ms`, `embedding_ms`, `selection_ms`, `policy_ms` und `total_ms`. Die Ausgabe enthält den letzten Lauf, Total-p50/p95 und Embedding-Cache-Diagnose. Keine Prompts, Antworten, Tool-Argumente/-Ergebnisse, Dateien oder Credentials.
+`performance` zeigt begrenzte Werte für `catalog_ms`, `embedding_ms`, `selection_ms`, `policy_ms` und `total_ms`, Total-p50/p95 sowie Embedding-Cache-Diagnose. Im Performance-Zustand werden keine Prompt-/Antworttexte oder Tool-Payloads gespeichert.
 
-## Readiness
+## Routing-Entscheidungstelemetrie
+
+Im bestehenden profilbezogenen Audit wird optional `routing_telemetry` mit genau diesen Feldern gespeichert:
+
+| Feld | Bedeutung |
+|---|---|
+| `confidence` | `high`, `medium`, `none` oder `not_assessed` |
+| `original_primary` | Gegen den Katalog geprüfter Primary vor der Policy oder leer |
+| `final_primary` | Tatsächlicher Primary nach der Policy oder leer |
+| `fallback_applied` | Echte boolesche Angabe für automatischen Primary-Wechsel; kein expliziter Benutzer-Override |
+| `fallback_reason` | Fester Code: `ready_within_margin`, `policy_replacement`, `unspecified` oder leer |
+
+`none` bedeutet: Die Entscheidung hat keinen endgültigen Primary. `not_assessed` bedeutet: Der endgültige Kandidat wurde nicht durch die Confidence-Engine bewertet oder ein älterer Eintrag enthält keine Telemetrie. Alte Einträge erhalten keine erfundenen nachträglichen Messungen. Ein blockierter Plan kann nicht behaupten, ein zwischenzeitlicher Fallback sei ausführbar geworden.
+
+Begründungen sind **fest zugelassene Codes, kein Freitext**. Dieser Datenpfad übernimmt keine Prompts, Konfigurationswerte, Tool-Payloads oder Modell-Erklärungen. Namen stammen aus dem aktiven Katalog und werden begrenzt sowie validiert. Fehlerhafte Werte werden normalisiert; ein Telemetriefehler darf einen sonst gültigen Routing-Plan nicht verwerfen.
+
+`audit last`, `quality last` und `recommend` zeigen die fünf Felder. Zusammenfassungen von Audit/Quality/Learning zeigen Confidence-Zähler, automatische Wechsel und beschreibende Quality-Mittelwerte für Entscheidungen mit/ohne Fallback. Nur abgeschlossene, bewertbare Quality-Einträge fließen in diese Mittelwerte ein. Fehlende Beobachtungen werden separat gezählt. Die Historie folgt `max_audit_entries`; eine Zusammenfassung verarbeitet maximal 1.000 Einträge.
+
+**Auch eine Route mit hoher Confidence kann beim Laden des Skills scheitern.** Confidence ist kein Ausführungserfolg. Gruppenmittelwerte beweisen nicht, dass Fallbacks die Ergebnisqualität verbessern. Die bisherige Quality-Formel und Shadow-Learning-Gewichte bleiben unverändert; aktives Lernen wird nicht eingeschaltet.
+
+## Readiness und Policy
 
 Skills können deklarieren:
 
@@ -178,25 +174,39 @@ requirements:
   config: [GITHUB_TOKEN]
 ```
 
-Status bleiben `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken` und `disabled`.
+Status: `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, `disabled`. Fehlende Deklarationen bedeuten nicht automatisch Einsatzbereitschaft. Readiness 2.0 ergänzt `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary` und Prüfzustände `available | missing | unknown`. Konfigurationsdiagnosen nennen Schlüssel, niemals deren Werte.
 
-## Policy, Enforcement, Audit, Quality, Learning
+Die Policy prüft installierte Namen, Readiness, deklarierte Abhängigkeiten, Alternativen, Rollen, Reihenfolge und Limits. Explizite Wünsche aktivieren keine defekten/deaktivierten Skills und heben unbrauchbare Skill-Abhängigkeiten nicht auf. Setup-Warnungen berechtigen nicht zur automatischen Installation.
 
-Die deterministische Policy bleibt für alle Routing-Modi autoritativ. Enforcement-Modi: `off`, `warn`, `primary`, `all`; Standard `warn`. Audit/Quality bewerten technische Routing-Ausführung, nicht die fachliche Richtigkeit der Antwort. Learning-Modi: `off`, `shadow`; v0.7.1 besitzt bewusst kein aktives selbstveränderndes Routing.
+Enforcement-Modi: `off`, `warn`, `primary`, `all`; Standard `warn`. Learning-Modi: `off`, `shadow`; ein aktives selbstveränderndes Routing ist nicht implementiert.
+
+## Codebase Memory und Folgekontext
+
+Der gebündelte `codebase-memory`-Skill deklariert `requirements.mcps: [codebase-memory]`. Geeignet für Repository-Struktur, Architektur, Symbole, Implementierungssuche, Abhängigkeiten, Referenzen und Änderungsfolgen vor Codearbeit. Nicht für normale E-Mails, Übersetzungen, allgemeine Recherche, Kalender, Rechnungen oder sonstige Aufgaben ohne Codebezug.
+
+Der Router startet, installiert oder konfiguriert Codebase Memory nicht. Jedes Profil benötigt seine eigene autorisierte MCP-Anbindung. Diese Fähigkeit ersetzt weder Hermes Memory noch setzt sie OpenViking voraus.
+
+Kurze Folgeanfragen wie „mach weiter“, „korrigiere das“ oder „teste es“ dürfen den vorherigen Primary nur übernehmen, wenn das normale Routing keinen Skill wählt. Explizite Wünsche, Negation, `avoid_when`, defekte/deaktivierte Skills und die Policy haben weiterhin Vorrang. Themenwechsel verwerfen veralteten Workflow-Kontext.
+
+Der begrenzte Profil-/Session-Kontext speichert ausschließlich Routing-Metadaten: gehashten Session-Key, vorherige Skill-Namen, Kategorie, Policy-Status und Zeitstempel. Keine Prompt- oder Antworttexte.
+
+## Lokale Embedding-Sicherheit
+
+Hybrid/Embedding akzeptiert ausschließlich numerische Loopback-HTTP-Ursprünge: keine URL-Zugangsdaten, Pfade, Queries, Fragmente, Proxies oder Redirects. Antwortgröße und Timeouts sind begrenzt; Vektoranzahl und Dimensionen müssen stimmen; Vektoren müssen endlich und ungleich null sein. Caches bleiben profilbezogen.
+
+Embedding-Dokumente enthalten begrenzte Namen, Beschreibung, Kategorie, Tags, `use_when`, Keywords und `works_with`. `avoid_when` bleibt ein Ausschlusssignal. `EMBEDDING_DOCUMENT_VERSION = 2` bezeichnet das Cache-Format, nicht die Plugin-Version; die Formatversion fließt zusammen mit den Routing-Metadaten in die Cache-Identität ein.
 
 ## OpenViking
-
-OpenViking bleibt im Repository kompatibel, aber empfohlen ist:
 
 ```yaml
 openviking_enabled: false
 ```
 
-Für spätere Aktivierung bleiben `openviking_read_enabled` und `openviking_auto_write_enabled` getrennt verfügbar.
+Die optionale Bridge bleibt vorhanden, aber standardmäßig pausiert. `openviking_read_enabled` und `openviking_auto_write_enabled` bleiben für eine später ausdrücklich geprüfte Aktivierung getrennt verfügbar. Der Hauptschalter verhindert Router-Bridge-Lese-/Schreibzugriffe; die unabhängige Hermes-Memory-Konfiguration wird nicht verändert.
 
 ## Konfigurationsreferenz
 
-CI prüft, dass diese Schlüssel und Defaults mit `plugin.yaml` und der englischen README übereinstimmen.
+CI gleicht diese exakten Schlüssel und Defaults mit `plugin.yaml` und der englischen README ab.
 
 | Einstellung | Typ | Standard |
 |---|---|---|
@@ -241,17 +251,7 @@ CI prüft, dass diese Schlüssel und Defaults mit `plugin.yaml` und der englisch
 
 Erlaubte Modi: `routing_mode` = `deterministic | hybrid | embedding | model`; `enforcement_mode` = `off | warn | primary | all`; `learning_mode` = `off | shadow`.
 
-## Sicherheit und Datenschutz
-
-- Profil-State bleibt über einen undurchsichtigen Profil-Scope getrennt.
-- Session-Kontinuität verwendet einen gehashten Session-Key und nur Routing-Metadaten.
-- Keine Prompts, Antworten, Tool-Payloads/-Ergebnisse, Dateien oder Credentials in Follow-up-/Performance-State.
-- Codebase-Memory-MCP wird nur passiv geprüft.
-- `skill_view` bleibt der Ausführungspfad für Skill-Prozeduren.
-- Embedding-Ausfall führt zum deterministischen Fallback.
-- OpenViking bleibt standardmäßig deaktiviert.
-
-## Entwicklung und CI
+## Entwicklung und Validierung
 
 ```bash
 python -m pytest -q
@@ -261,7 +261,9 @@ python -m compileall -q .
 hermes plugins doctor . --ci
 ```
 
-CI prüft Python 3.11/3.12/3.13, bekannte Hermes-Revisionen und Hermes `main` zusätzlich informativ.
+Die Tests decken Policy/Audit-Verbindung, Produktions-Wrapper, Abschluss und erneutes Laden, Profil-/Session-Trennung, begrenzte Historie, fehlerhafte Telemetrie, Freitextausschluss bei Begründungen sowie unveränderte Quality-/Learning-Bewertung ab. Der Versionsabgleich umfasst `pyproject.toml`, `plugin.yaml`, beide gebündelten Skills, Paket-/Runtime-Version und aktuelle Dokumentationsmarker.
+
+GitHub CI prüft Python 3.11/3.12/3.13, Benchmarks, Dokumentationsabgleich, Kompilierung, zwei gepinnte Hermes-Plugin-Scans und den aktuellen main-Scan informativ. Ein echter isolierter Profiltest mit dem vorgesehenen lokalen Modell, Codebase Memory und Embedding-Dienst bleibt eine getrennte Abnahmebedingung vor Merge oder Release.
 
 ## Lizenz
 

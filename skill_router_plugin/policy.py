@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .catalog import is_negated_name, is_quoted_name
+from .catalog import is_negated_name, is_quoted_name, score_entry
+from .confidence import ConfidenceCandidate, choose_primary
+from .telemetry import policy_telemetry, routing_telemetry
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -54,30 +56,42 @@ def apply_routing_policy(
     max_skills: int,
     explicit_skill_names: list[str],
 ) -> dict[str, Any]:
-    """Validate a model plan against catalog readiness and declared dependencies."""
-    del task
+    """Validate a model plan and attach content-free decision metadata."""
+    decision_metadata: dict[str, Any] = {}
     try:
-        return _apply_policy(
+        result = _apply_policy(
+            task=task,
             selected_skills=selected_skills,
             catalog_entries=catalog_entries,
             max_skills=max_skills,
             explicit_skill_names=explicit_skill_names,
+            decision_metadata=decision_metadata,
         )
     except Exception:
-        return {
+        result = {
             "selections": [],
             "warnings": ["policy-error"],
             "policy_status": "degraded",
             "changes": ["Policy validation failed; no skill recommendation was retained."],
         }
+    try:
+        result["telemetry"] = policy_telemetry(
+            selected_skills, result, catalog_entries, explicit_skill_names, decision_metadata
+        )
+    except Exception:
+        # Observability must never change a successfully validated routing plan.
+        result["telemetry"] = routing_telemetry()
+    return result
 
 
 def _apply_policy(
     *,
+    task: str,
     selected_skills: list[dict[str, Any]],
     catalog_entries: list[dict[str, Any]],
     max_skills: int,
     explicit_skill_names: list[str],
+    decision_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     safe_limit = max(1, min(int(max_skills), 5))
     catalog = {
@@ -227,18 +241,64 @@ def _apply_policy(
     if not valid_candidates:
         return _result([], warnings, "blocked", changes)
 
-    primary = next(
+    explicit_primary = next(
         (
             item
             for explicit_name in explicit_order
             for item in valid_candidates
             if item["name"] == explicit_name
         ),
-        next(
-            (item for item in valid_candidates if item["requested_role"] == "primary"),
-            valid_candidates[0],
-        ),
+        None,
     )
+    requested_primary = next(
+        (item for item in valid_candidates if item["requested_role"] == "primary"),
+        None,
+    )
+    ready_primary = next(
+        (item for item in valid_candidates if item["readiness_status"] == READY),
+        None,
+    )
+    primary = explicit_primary or requested_primary or ready_primary or valid_candidates[0]
+    if (
+        explicit_primary is None
+        and requested_primary is not None
+        and requested_primary["readiness_status"] == UNKNOWN
+        and ready_primary is not None
+        and ready_primary is not requested_primary
+    ):
+        confidence_candidates = [
+            ConfidenceCandidate(
+                name=item["name"],
+                score=float(score_entry(task, catalog[item["name"]])["relevance_score"]),
+                readiness_status=item["readiness_status"],
+            )
+            for item in valid_candidates
+            if item is requested_primary or item["readiness_status"] == READY
+        ]
+        decision = choose_primary(
+            confidence_candidates,
+            minimum_score=0.0,
+            ready_fallback_margin=5.0,
+            high_confidence_margin=10.0,
+        )
+        decision_metadata.update({
+            "primary": decision.primary,
+            "confidence": decision.confidence,
+            "fallback_applied": decision.fallback_applied,
+        })
+        decided = next(
+            (item for item in valid_candidates if item["name"] == decision.primary),
+            None,
+        )
+        if decided is not None:
+            primary = decided
+        if decision.fallback_applied and primary is not requested_primary:
+            changed = True
+            _append(
+                changes,
+                f"Preferred ready skill as Primary over unknown skill: {requested_primary['name']}",
+            )
+
     for item in valid_candidates:
         normalized_role = "primary" if item is primary else "supporting"
         if item["requested_role"] != normalized_role:

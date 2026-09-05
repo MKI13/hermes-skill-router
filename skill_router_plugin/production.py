@@ -1,4 +1,4 @@
-"""v0.7.1 production helpers: follow-up continuity, doctor, performance and richer embeddings."""
+"""Production helpers: follow-up continuity, diagnostics, rollout preflight and richer embeddings."""
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -14,13 +14,13 @@ from . import embedding as embedding_module
 from . import runtime as runtime_module
 from .catalog import is_negated_name, score_entry
 from .policy import detect_explicit_skill_names
-from .readiness import BROKEN, DISABLED
+from .readiness import BROKEN, DISABLED, READY
+from .version import VERSION
 
-VERSION = "0.7.1"
 EMBEDDING_DOCUMENT_VERSION = 2
 _CONTEXT_KEY = "router.followup_context.v1"
 _PERF_KEY = "router.performance.v1"
-_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v071", default=None)
+_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v080", default=None)
 _ORIGINAL_SELECT: Callable[..., Any] | None = None
 _FOLLOWUP = re.compile(
     r"^(?:ok[,.!?]?\s*)?(?:mach(?:e)?\s+weiter|weiter|jetzt\s+(?:korrigier|änder|aender|test|prüf|pruef|commit|push)|"
@@ -164,68 +164,209 @@ class ProductionRoutingEnhancements:
         except Exception: lines += ["", "Embedding cache: unavailable"]
         return "\n".join(lines)
 
+    def _diagnostic_config(self) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+        """Validate raw settings before runtime fail-open normalization hides mistakes.
+
+        Invalid values are never echoed: config contents may contain private data.
+        This diagnostic does not modify the runtime's conservative fallback behavior.
+        """
+        settings: dict[str, Any] = {}
+        checks: list[tuple[str, str]] = []
+        fields = (
+            ("routing_mode", "deterministic", {"deterministic", "hybrid", "embedding", "model"}),
+            ("enforcement_mode", "warn", {"off", "warn", "primary", "all"}),
+            ("learning_mode", "shadow", {"off", "shadow"}),
+            ("followup_context_enabled", True, None),
+            ("openviking_enabled", False, None),
+        )
+        for name, default, allowed in fields:
+            try:
+                raw = self.ctx.get_config(name, default)
+            except Exception:
+                settings[name] = None
+                checks.append(("BLOCKED", f"Unable to read {name} configuration"))
+                continue
+            valid = type(raw) is bool if allowed is None else isinstance(raw, str) and raw.casefold() in allowed
+            if not valid:
+                settings[name] = None
+                checks.append(("BLOCKED", f"Invalid {name} configuration"))
+            else:
+                settings[name] = raw if allowed is None else raw.casefold()
+        return settings, checks
+
+    def _diagnostic_catalog(self) -> list[dict[str, Any]]:
+        """Require evidence of an available catalog, not the default empty snapshot."""
+        self.runtime.ensure_catalog(force=False)
+        snapshot = self.runtime._snapshot()
+        if not isinstance(snapshot, dict):
+            raise ValueError("catalog unavailable")
+        entries = snapshot.get("entries")
+        digest = snapshot.get("catalog_hash")
+        if not isinstance(entries, list) or not isinstance(digest, str) or not digest.strip():
+            raise ValueError("catalog unavailable")
+        if any(not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
+               or not entry["name"].strip() for entry in entries):
+            raise ValueError("invalid catalog entry")
+        return entries
+
+    def _codebase_status(self, entries: list[dict[str, Any]]):
+        """Return passive MCP evidence and a genuinely ready referencing skill."""
+        try:
+            mcp = self.compatibility.active_mcp_readiness()
+        except Exception:
+            mcp = None
+        if not isinstance(mcp, dict):
+            mcp = None
+        candidates = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            requirements = entry.get("requirements")
+            mcps = requirements.get("mcps") if isinstance(requirements, dict) else None
+            if isinstance(mcps, list) and "codebase-memory" in mcps:
+                candidates.append(entry)
+        ready = next((entry for entry in candidates
+                      if entry.get("readiness_status") == READY
+                      and isinstance(entry.get("name"), str) and entry["name"].strip()
+                      and entry.get("setup_needed", False) is False
+                      and entry.get("policy_metadata_complete", True) is True), None)
+        return mcp, candidates, ready
+
     def doctor_text(self) -> str:
-        c = self.compatibility.capabilities; checks = []
+        settings, checks = self._diagnostic_config()
+        c = self.compatibility.capabilities
         for attr, label in (("raw_skill_reader","Hermes raw skill reader"),("skill_lifecycle","Hermes skill lifecycle hook"),
                             ("skill_execution_guard","Hermes pre_tool_call guard"),("skill_execution_audit","Hermes post-tool/post-LLM audit hooks"),
                             ("profile_discovery","Hermes profile discovery"),("mcp_discovery","Hermes MCP configuration discovery")):
             checks.append(("PASS" if getattr(c, attr, False) else "WARN", label))
         try:
-            self.runtime.ensure_catalog(force=False); snapshot = self.runtime._snapshot(); entries = snapshot.get("entries", [])
-            checks += [("PASS" if isinstance(entries,list) else "BLOCKED", f"Hermes skill catalog ({len(entries) if isinstance(entries,list) else 0} skills)"),
-                       ("PASS" if snapshot.get("catalog_hash") else "WARN", "Skill Router catalog hash")]
-        except Exception: entries=[]; checks.append(("BLOCKED","Hermes skill catalog unavailable"))
+            entries = self._diagnostic_catalog()
+            checks += [("PASS", f"Hermes skill catalog ({len(entries)} skills)"),
+                       ("PASS", "Skill Router catalog hash")]
+        except Exception:
+            entries = []
+            checks.append(("BLOCKED", "Hermes skill catalog unavailable"))
         checks += [("PASS","Routing policy available"),("PASS","Execution audit state available"),("PASS","Quality evaluation available"),("PASS","Shadow learning state available")]
-        if str(self.runtime._routing_mode()) in {"hybrid","embedding"}: checks += self._embedding_checks()
-        else: checks.append(("SKIP",f"Embedding health check not required in routing_mode={self.runtime._routing_mode()}"))
-        checks += self._codebase_checks(entries if isinstance(entries,list) else [])
-        checks.append(("WARN","OpenViking enabled; v0.7.1 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
+        mode = settings["routing_mode"]
+        if mode in {"hybrid", "embedding"}:
+            checks += self._embedding_checks()
+        else:
+            checks.append(("SKIP", f"Embedding health check not required in routing_mode={mode or 'invalid'}"))
+        checks += self._codebase_checks(entries)
+        if settings["openviking_enabled"] is True:
+            checks.append(("WARN", f"OpenViking enabled; v{VERSION} rollout recommendation is disabled"))
+        elif settings["openviking_enabled"] is False:
+            checks.append(("SKIP", "OpenViking disabled by configuration"))
         overall = "BLOCKED" if any(x[0]=="BLOCKED" for x in checks) else "WARN" if any(x[0]=="WARN" for x in checks) else "PASS"
         return "\n".join(["Hermes Skill Router Doctor","",f"Overall: {overall}",""] + [f"{level:<7} {msg}" for level,msg in checks])
 
+    def rollout_text(self) -> str:
+        """Return a rollout decision without applying profile configuration changes."""
+        settings, checks = self._diagnostic_config()
+        profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
+        mode = settings["routing_mode"]
+        enforcement = settings["enforcement_mode"]
+        learning = settings["learning_mode"]
+
+        critical = (("raw_skill_reader", "Hermes raw skill reader"), ("skill_execution_guard", "Hermes execution guard"))
+        for attr, label in critical:
+            checks.append(("PASS" if getattr(self.compatibility.capabilities, attr, False) else "BLOCKED", label))
+
+        try:
+            entries = self._diagnostic_catalog()
+            checks.append(("PASS", f"Catalog ready ({len(entries)} skills)"))
+        except Exception:
+            entries = []
+            checks.append(("BLOCKED", "Catalog or catalog hash unavailable"))
+
+        if mode in {"deterministic", "hybrid"}:
+            checks.append(("PASS", f"routing_mode={mode}"))
+        elif mode == "embedding":
+            checks.append(("WARN", "routing_mode=embedding has no deterministic primary signal requirement"))
+        elif mode == "model":
+            checks.append(("WARN", "routing_mode=model is not recommended for the conservative rollout"))
+
+        if enforcement == "warn":
+            checks.append(("PASS", "enforcement_mode=warn"))
+        elif enforcement is not None:
+            checks.append(("WARN", f"enforcement_mode={enforcement}; conservative rollout target is warn"))
+        if learning == "shadow":
+            checks.append(("PASS", "learning_mode=shadow"))
+        elif learning is not None:
+            checks.append(("WARN", f"learning_mode={learning}; conservative rollout target is shadow"))
+        if settings["followup_context_enabled"] is True:
+            checks.append(("PASS", "Follow-up context enabled"))
+        elif settings["followup_context_enabled"] is False:
+            checks.append(("WARN", "Follow-up context disabled"))
+
+        if mode in {"hybrid", "embedding"}:
+            checks += self._embedding_checks()
+        else:
+            checks.append(("SKIP", f"Embedding live check not required in routing_mode={mode or 'invalid'}"))
+
+        checks += self._codebase_checks(entries)
+        if settings["openviking_enabled"] is True:
+            checks.append(("WARN", "OpenViking enabled; conservative rollout target expects it paused"))
+        elif settings["openviking_enabled"] is False:
+            checks.append(("PASS", "OpenViking disabled"))
+
+        blocked = any(level == "BLOCKED" for level, _ in checks)
+        warned = any(level == "WARN" for level, _ in checks)
+        decision = "BLOCKED" if blocked else "REVIEW" if warned else "READY"
+        return "\n".join([
+            "Hermes Skill Router Rollout Check", "", f"Profile: {profile}", f"Version: {VERSION}",
+            f"Decision: {decision}", "", *[f"{level:<7} {message}" for level, message in checks],
+            "", "Read-only for profile configuration: no settings, skills, MCPs or gateways were modified. Router-owned diagnostic caches may be refreshed.",
+        ])
+
     def canary_text(self) -> str:
-        """Run a read-only canary against the active Hermes profile."""
-        checks: list[tuple[str, str]] = []
+        """Check catalog, passive readiness and follow-up policy, not live MCP execution."""
+        settings, checks = self._diagnostic_config()
         profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
         try:
-            self.runtime.ensure_catalog(force=False)
-            snapshot = self.runtime._snapshot()
-            entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
-            if not isinstance(entries, list):
-                raise RuntimeError("catalog entries unavailable")
+            entries = self._diagnostic_catalog()
         except Exception:
             entries = []
             checks.append(("BLOCKED", "Active-profile skill catalog unavailable"))
 
-        try:
-            mcp = self.compatibility.active_mcp_readiness()
-        except Exception:
-            mcp = None
-        codebase = next((entry for entry in entries if isinstance(entry, dict) and "codebase-memory" in ((entry.get("requirements") or {}).get("mcps") or [])), None)
-        skill_ready = codebase is not None and str(codebase.get("readiness_status") or "") not in {BROKEN, DISABLED}
+        mcp, candidates, codebase = self._codebase_status(entries)
+        skill_ready = codebase is not None
         mcp_ready = isinstance(mcp, dict) and mcp.get("codebase-memory") is True
         codebase_ready = skill_ready and mcp_ready
         if codebase_ready:
-            checks.append(("PASS", "Codebase Memory skill and MCP are ready"))
-        elif mcp_ready and codebase is None:
+            checks.append(("PASS", "Codebase Memory skill and MCP are ready (passive configuration check)"))
+        elif mcp_ready and not candidates:
             checks.append(("WARN", "Codebase Memory MCP is ready but routing skill is missing"))
-        elif skill_ready and not mcp_ready:
+        elif candidates and not mcp_ready:
             checks.append(("WARN", "Codebase Memory routing skill is available but MCP is not ready"))
         else:
             checks.append(("WARN", "Codebase Memory is not ready in the active profile"))
 
         if codebase_ready:
-            primary = str(codebase.get("name") or "")
+            primary = codebase["name"]
             token = self._followup.set({"previous_primary_skill": primary, "previous_supporting_skills": [], "previous_policy_status": "valid"})
+            followup_ok = switch_ok = negated_ok = False
             try:
-                followup, followup_method = self.followup_fallback("Mach weiter und teste es.", entries, [], "deterministic")
+                task = "Mach weiter und teste es."
+                followup, followup_method = self.followup_fallback(task, entries, [], "deterministic")
                 switch, switch_method = self.followup_fallback("Schreib jetzt eine E-Mail an den Kunden.", entries, [], "deterministic")
                 negated, negated_method = self.followup_fallback(f"Benutze {primary} dafür nicht.", entries, [], "deterministic")
+                switch_ok = not switch and switch_method == "deterministic"
+                negated_ok = not negated and negated_method == "deterministic"
+                limit = self._int("max_skills_per_task", 4, 1, 5)
+                policy = self.runtime._policy_result(task, followup, entries, limit)
+                validated = policy.get("selections") if isinstance(policy, dict) else None
+                followup_ok = bool(followup and followup_method == "session-followup"
+                    and isinstance(policy, dict) and policy.get("policy_status") in {"valid", "adjusted"}
+                    and isinstance(validated, list) and any(isinstance(item, dict)
+                        and item.get("name") == primary and item.get("role") == "primary" for item in validated))
+            except Exception:
+                followup_ok = False
             finally:
                 self._followup.reset(token)
-            checks.append(("PASS" if followup and followup_method == "session-followup" else "BLOCKED", "Follow-up continuity preserved the code workflow"))
-            checks.append(("PASS" if not switch and switch_method == "deterministic" else "BLOCKED", "Topic switch does not reuse Codebase Memory"))
-            checks.append(("PASS" if not negated and negated_method == "deterministic" else "BLOCKED", "Negation prevents Codebase Memory reuse"))
+            checks.append(("PASS" if followup_ok else "BLOCKED", "Follow-up continuity preserved the code workflow through policy"))
+            checks.append(("PASS" if switch_ok else "BLOCKED", "Topic switch does not reuse Codebase Memory"))
+            checks.append(("PASS" if negated_ok else "BLOCKED", "Negation prevents Codebase Memory reuse"))
         else:
             checks += [
                 ("SKIP", "Follow-up continuity test requires ready Codebase Memory skill and MCP"),
@@ -233,13 +374,19 @@ class ProductionRoutingEnhancements:
                 ("SKIP", "Negation test requires ready Codebase Memory skill and MCP"),
             ]
 
-        if str(self.runtime._routing_mode()) in {"hybrid", "embedding"}:
+        mode = settings["routing_mode"]
+        if mode in {"hybrid", "embedding"}:
             checks += self._embedding_checks()
         else:
-            checks.append(("SKIP", f"Local embedding live check not required in routing_mode={self.runtime._routing_mode()}"))
-        checks.append(("WARN", "OpenViking is enabled; canary target expects it paused") if self._bool("openviking_enabled", False) else ("PASS", "OpenViking remains disabled"))
+            checks.append(("SKIP", f"Local embedding live check not required in routing_mode={mode or 'invalid'}"))
+        if settings["openviking_enabled"] is True:
+            checks.append(("WARN", "OpenViking is enabled; canary target expects it paused"))
+        elif settings["openviking_enabled"] is False:
+            checks.append(("PASS", "OpenViking remains disabled"))
         overall = "BLOCKED" if any(level == "BLOCKED" for level, _ in checks) else "WARN" if any(level == "WARN" for level, _ in checks) else "PASS"
-        return "\n".join(["Hermes Skill Router Canary", "", f"Profile: {profile}", f"Overall: {overall}", ""] + [f"{level:<7} {message}" for level, message in checks])
+        return "\n".join(["Hermes Skill Router Canary", "", f"Profile: {profile}", f"Overall: {overall}", ""]
+            + [f"{level:<7} {message}" for level, message in checks]
+            + ["", "Scope: MCP readiness is configuration-only; this is not a live MCP or local-model test."])
 
     def _embedding_checks(self):
         try:
@@ -250,17 +397,25 @@ class ProductionRoutingEnhancements:
         except Exception as exc: return [("BLOCKED",f"Embedding health check failed ({type(exc).__name__})")]
 
     def _codebase_checks(self, entries: list[dict[str, Any]]):
-        try: mcp=self.compatibility.active_mcp_readiness()
-        except Exception: mcp=None
-        if mcp is None: return [("WARN","Codebase Memory MCP status unavailable")]
-        checks=[("PASS","Codebase Memory MCP configured and enabled") if mcp.get("codebase-memory") is True else ("WARN","Codebase Memory MCP not configured or not ready in this profile")]
-        routed=any("codebase-memory" in ((e.get("requirements") or {}).get("mcps") or []) for e in entries if isinstance(e,dict))
-        checks.append(("PASS","Codebase Memory routing skill available") if routed else ("WARN","Codebase Memory MCP is available but no routable Hermes skill references it") if mcp.get("codebase-memory") is True else ("WARN","Codebase Memory routing skill not ready in this profile"))
+        mcp, candidates, ready = self._codebase_status(entries)
+        if mcp is None:
+            return [("WARN", "Codebase Memory MCP status unavailable")]
+        checks = [("PASS", "Codebase Memory MCP configured and enabled") if mcp.get("codebase-memory") is True
+                  else ("WARN", "Codebase Memory MCP not configured or not ready in this profile")]
+        if ready is not None:
+            checks.append(("PASS", "Codebase Memory routing skill available"))
+        elif candidates:
+            checks.append(("WARN", "Codebase Memory routing skill is not ready"))
+        elif mcp.get("codebase-memory") is True:
+            checks.append(("WARN", "Codebase Memory MCP is available but no routable Hermes skill references it"))
+        else:
+            checks.append(("WARN", "Codebase Memory routing skill not ready in this profile"))
         return checks
 
     def command(self, raw_args: str) -> str:
         action=str(raw_args or "").strip().casefold()
         if action=="doctor": return self.doctor_text()
+        if action=="rollout-check": return self.rollout_text()
         if action=="performance": return self.performance_text()
         if action=="canary": return self.canary_text()
         return self._command(raw_args)

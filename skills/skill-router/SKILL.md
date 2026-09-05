@@ -1,7 +1,7 @@
 ---
 name: skill-router
-description: Inspect routing plans, readiness, diagnostics, performance, and execution audits.
-version: 0.7.1
+description: Inspect routing plans, readiness, diagnostics, rollout readiness, performance, and execution audits.
+version: 0.11.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -13,13 +13,15 @@ metadata:
 
 This operational skill explains how to inspect and diagnose the always-on Hermes Skill Router plugin. It does not replace task-specific skills.
 
+This branch is development version v0.11.0, unreleased. Repository CI is not a live-profile validation or permission to deploy.
+
 ## When to Use
 
 Use this skill when the user asks to:
 
 - inspect which installed skills should handle a task;
 - diagnose wrong, missing, stale, or unnecessary Primary/Supporting Skill recommendations;
-- run Router health or performance checks;
+- run Router health, rollout-preflight, or performance checks;
 - refresh or inspect the profile-local routing plan;
 - inspect readiness, audit, quality, enforcement, or shadow-learning state;
 - discover Hermes profiles or apply the Router's explicit profile setup workflow.
@@ -33,6 +35,8 @@ Inside Hermes:
 ```text
 /skill-router status
 /skill-router doctor
+/skill-router rollout-check
+/skill-router canary
 /skill-router performance
 /skill-router events 20
 /skill-router refresh
@@ -45,7 +49,7 @@ Inside Hermes:
 /skill-router recommend <task>
 ```
 
-Terminal equivalents use `hermes skill-router ...`. Profile discovery and setup remain terminal-oriented through `profiles`, `profiles --sync`, `setup`, and explicit `setup --apply`.
+Terminal equivalents use `hermes --profile <profile> skill-router ...`. Profile discovery and setup remain terminal-oriented through `profiles`, `profiles --sync`, `setup`, and explicit `setup --apply`. The apply/sync operations change configuration and need the user's authorization.
 
 ## Routing Rules
 
@@ -55,65 +59,70 @@ Routing modes live under `plugins.entries.skill-router.settings.routing_mode`:
 - `hybrid` or `embedding`: deterministic explicit-request handling plus direct local Ollama embeddings with deterministic fail-open;
 - `model`: auxiliary-model selection with deterministic fallback.
 
-All routes pass through the deterministic policy gate. The policy remains authoritative for readiness, dependency expansion, alternatives, role normalization, ordering, and the skill limit.
+All routes pass through the deterministic policy gate. The policy remains authoritative for readiness, dependency expansion, alternatives, role normalization, ordering, and the skill limit. Confidence-aware comparisons do not waive these checks. An explicit request does not make a broken or disabled skill executable.
 
 The Router never routes an MCP server directly. An MCP-backed workflow must be represented by a Hermes skill that declares `requirements.mcps`. The bundled `codebase-memory` skill is the reference integration for the `codebase-memory` MCP identity.
 
 ## Follow-up Continuity
 
-v0.7.1 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
+The Router keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
 
-Continuity is deliberately weak. It is used only when normal routing abstains and never overrides:
-
-- an explicit skill request;
-- skill-name negation;
-- `avoid_when` evidence;
-- broken/disabled readiness;
-- the policy gate.
-
-Clear topic changes discard the previous routing context.
+Continuity is used only when normal routing abstains and never overrides explicit skill requests, skill-name negation, `avoid_when`, broken/disabled readiness, or the policy gate. Clear topic changes discard previous routing context.
 
 ## Local Embeddings
 
 Hybrid routing embeds a compact, versioned routing fingerprint rather than the full `SKILL.md`. It includes name, description, category, tags, `use_when`, keywords, and `works_with`. `avoid_when` remains a deterministic exclusion signal. Cache identity includes the embedding document version so metadata-format changes cannot silently reuse stale vectors.
 
-The existing safety boundary remains mandatory: numeric loopback HTTP origin only, no proxy, no redirects, bounded response size, bounded timeouts, exact vector dimension, finite non-zero vectors, and deterministic fallback on failure.
+Numeric loopback HTTP origin only, no proxy, no redirects, bounded response size and timeouts, exact vector dimension, finite non-zero vectors, and deterministic fallback on failure remain mandatory. The embedding document format version is independent of the plugin version.
 
 ## Codebase Memory
 
-The bundled `codebase-memory` skill should be used for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. Its readiness depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
+Use the bundled skill for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. It depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
-In v0.7.1 the production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
+The canary requires an available routing skill and a configured/enabled MCP before its Codebase-Memory checks report PASS. An unavailable side yields WARN and skipped continuity checks. Passive MCP discovery is not a real search or end-to-end MCP execution test.
 
-## Doctor
+## Diagnostics and Rollout Check
 
-`/skill-router doctor` and `hermes skill-router doctor` perform safe diagnostics for Hermes capabilities, catalog state, local embeddings when required, Codebase Memory MCP/skill readiness, and Router subsystems. OpenViking is reported as `SKIP` when disabled.
+`rollout-check` returns `READY`, `REVIEW`, or `BLOCKED`; `doctor` and `canary` return `PASS`, `WARN`, or `BLOCKED`. They diagnose the active profile, not other profiles.
 
-Doctor must never print credentials, environment values, hidden paths, prompts, tool payloads, or skill contents.
+Doctor adds a bounded readiness summary. `inspect <skill>` groups missing dependencies, unknown dependencies, setup requirements, and a routing recommendation. Configuration diagnostics name keys rather than exposing their values.
 
-## Performance
+These checks do not install, enable, start, stop, restart, or reconfigure skills, MCPs, profiles, or gateways. However, catalog discovery can refresh Router-owned caches/state. Hybrid/embedding health checks can contact the configured numeric loopback endpoint. Do not claim these commands guarantee zero file writes or zero network requests.
 
-`/skill-router performance` and `hermes skill-router performance` expose bounded local timing metadata for catalog, embedding, selection, policy, and total routing latency, plus p50/p95 total latency and embedding cache diagnostics. No prompt or response content is stored for performance telemetry.
+Conservative defaults are deterministic routing, `enforcement_mode: warn`, `learning_mode: shadow`, follow-up context enabled, and OpenViking paused. Hybrid is optional after verifying the local service. `READY` permits controlled testing; it never authorizes automatic rollout.
 
-## Shadow Learning
+## Decision Telemetry
 
-`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.7.1.
+Policy -> Runtime -> Audit retains only `confidence`, `original_primary`, `final_primary`, `fallback_applied`, and `fallback_reason` in `routing_telemetry`. The original/final names come from the current catalog. `fallback_reason` is a fixed code, never model-generated explanatory text.
+
+`audit last`, `quality last`, and `recommend` show the five fields. `recommend` does not append execution-audit entries but may refresh catalog/derived state. General audit/quality/learning summaries show bounded observational counts and quality cohorts. Only finalized, assessable quality records enter cohort means.
+
+Interpret the fields carefully:
+
+- `not_assessed`: no confidence assessment for the final candidate, including old records without telemetry;
+- `none`: no final primary;
+- `high` / `medium`: routing heuristics, not correctness probabilities or execution outcomes;
+- `fallback_applied`: automatic primary replacement, not an explicit override or proof of success;
+- reason codes: `ready_within_margin`, `policy_replacement`, `unspecified`, or empty.
+
+Blocked plans cannot claim that an intermediate primary replacement became executable. Missing historical metadata must stay unobserved. Telemetry must not copy prompts, configuration values, model explanations, or tool payloads. It must not change selection, quality scoring, enforcement, or learning weights.
+
+## Performance and Shadow Learning
+
+`performance` exposes bounded local timing metadata for catalog, embedding, selection, policy, and total latency, plus p50/p95 and cache diagnostics. No prompt/response content is stored in performance telemetry.
+
+`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode. Observational fallback quality differences are not evidence of a causal improvement.
 
 ## Procedure
 
 1. Read the injected `[Skill Router]` block before starting the task.
 2. Load every validated skill with `skill_view` in the listed order.
-3. Treat the Primary Skill as the controlling workflow.
-4. Apply Supporting Skills only where compatible and useful.
-5. Respect setup/readiness warnings before depending on a skill.
-6. If routing looks wrong, use `doctor`, `recommend`, `inspect`, `audit last`, and `performance` to isolate the problem.
-7. Use `refresh` after manual skill changes not reflected by Hermes lifecycle events.
+3. Treat the Primary Skill as the controlling workflow; merge Supporting Skills only where compatible.
+4. Respect setup/readiness warnings before depending on a skill.
+5. Before rollout, review the target profile and run `rollout-check`, `doctor`, and `canary`; obtain real isolated-profile validation separately.
+6. Diagnose bad routing with `recommend`, `inspect`, `audit last`, `quality last`, and `performance`.
+7. Use `refresh` after manual skill changes not reflected by lifecycle events.
 
 ## Pitfalls
 
-- Never invent installed skill names.
-- Never assume another profile's catalog, MCP configuration, follow-up context, audit, quality, learning, or performance state applies to the active profile.
-- Never route directly to MCP tools.
-- Never substitute raw model output for a blocked policy result.
-- Never treat audit, quality, shadow learning, or performance metrics as proof that Hermes' final domain answer is correct.
-- OpenViking remains optional and disabled by default in the recommended v0.7.1 rollout.
+Never invent installed names or reuse another profile's catalog, MCP configuration, follow-up context, audit, quality, or learning state. Never route directly to MCPs, replace a blocked policy with raw model output, or assume technical metrics prove a final answer correct. OpenViking remains optional and disabled by default; no profile rollout is automatic.

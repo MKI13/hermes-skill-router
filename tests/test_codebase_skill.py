@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from skill_router_plugin.version import VERSION
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_codebase_memory_skill_declares_mcp_requirement_and_version():
     text = (ROOT / "skills" / "codebase-memory" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: codebase-memory" in text
-    assert "version: 0.7.1" in text
+    assert f"version: {VERSION}" in text
     assert "requirements:" in text and "mcps:" in text and "- codebase-memory" in text
     assert "never starts, installs, reconfigures, or repairs the MCP" in text
 
