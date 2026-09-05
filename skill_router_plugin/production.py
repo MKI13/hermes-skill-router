@@ -1,4 +1,4 @@
-"""v0.7.0 production helpers: follow-up continuity, doctor, performance and richer embeddings."""
+"""v0.7.1 production helpers: follow-up continuity, doctor, performance and richer embeddings."""
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -16,11 +16,11 @@ from .catalog import is_negated_name, score_entry
 from .policy import detect_explicit_skill_names
 from .readiness import BROKEN, DISABLED
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 EMBEDDING_DOCUMENT_VERSION = 2
 _CONTEXT_KEY = "router.followup_context.v1"
 _PERF_KEY = "router.performance.v1"
-_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v070", default=None)
+_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v071", default=None)
 _ORIGINAL_SELECT: Callable[..., Any] | None = None
 _FOLLOWUP = re.compile(
     r"^(?:ok[,.!?]?\s*)?(?:mach(?:e)?\s+weiter|weiter|jetzt\s+(?:korrigier|änder|aender|test|prüf|pruef|commit|push)|"
@@ -179,7 +179,7 @@ class ProductionRoutingEnhancements:
         if str(self.runtime._routing_mode()) in {"hybrid","embedding"}: checks += self._embedding_checks()
         else: checks.append(("SKIP",f"Embedding health check not required in routing_mode={self.runtime._routing_mode()}"))
         checks += self._codebase_checks(entries if isinstance(entries,list) else [])
-        checks.append(("WARN","OpenViking enabled; v0.7.0 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
+        checks.append(("WARN","OpenViking enabled; v0.7.1 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
         overall = "BLOCKED" if any(x[0]=="BLOCKED" for x in checks) else "WARN" if any(x[0]=="WARN" for x in checks) else "PASS"
         return "\n".join(["Hermes Skill Router Doctor","",f"Overall: {overall}",""] + [f"{level:<7} {msg}" for level,msg in checks])
 
@@ -202,14 +202,19 @@ class ProductionRoutingEnhancements:
         except Exception:
             mcp = None
         codebase = next((entry for entry in entries if isinstance(entry, dict) and "codebase-memory" in ((entry.get("requirements") or {}).get("mcps") or [])), None)
-        if codebase is not None and str(codebase.get("readiness_status") or "") not in {BROKEN, DISABLED}:
-            checks.append(("PASS", "Codebase Memory skill is ready"))
-        elif isinstance(mcp, dict) and mcp.get("codebase-memory") is True:
+        skill_ready = codebase is not None and str(codebase.get("readiness_status") or "") not in {BROKEN, DISABLED}
+        mcp_ready = isinstance(mcp, dict) and mcp.get("codebase-memory") is True
+        codebase_ready = skill_ready and mcp_ready
+        if codebase_ready:
+            checks.append(("PASS", "Codebase Memory skill and MCP are ready"))
+        elif mcp_ready and codebase is None:
             checks.append(("WARN", "Codebase Memory MCP is ready but routing skill is missing"))
+        elif skill_ready and not mcp_ready:
+            checks.append(("WARN", "Codebase Memory routing skill is available but MCP is not ready"))
         else:
             checks.append(("WARN", "Codebase Memory is not ready in the active profile"))
 
-        if codebase is not None:
+        if codebase_ready:
             primary = str(codebase.get("name") or "")
             token = self._followup.set({"previous_primary_skill": primary, "previous_supporting_skills": [], "previous_policy_status": "valid"})
             try:
@@ -222,7 +227,11 @@ class ProductionRoutingEnhancements:
             checks.append(("PASS" if not switch and switch_method == "deterministic" else "BLOCKED", "Topic switch does not reuse Codebase Memory"))
             checks.append(("PASS" if not negated and negated_method == "deterministic" else "BLOCKED", "Negation prevents Codebase Memory reuse"))
         else:
-            checks += [("SKIP", "Follow-up continuity test requires the Codebase Memory skill"), ("SKIP", "Topic-switch test requires the Codebase Memory skill"), ("SKIP", "Negation test requires the Codebase Memory skill")]
+            checks += [
+                ("SKIP", "Follow-up continuity test requires ready Codebase Memory skill and MCP"),
+                ("SKIP", "Topic-switch test requires ready Codebase Memory skill and MCP"),
+                ("SKIP", "Negation test requires ready Codebase Memory skill and MCP"),
+            ]
 
         if str(self.runtime._routing_mode()) in {"hybrid", "embedding"}:
             checks += self._embedding_checks()
@@ -238,7 +247,7 @@ class ProductionRoutingEnhancements:
             vector=vectors[0]; dim=int(settings["dimensions"])
             if len(vectors)!=1 or len(vector)!=dim or not all(math.isfinite(float(v)) for v in vector) or not any(float(v)!=0 for v in vector): raise RuntimeError("invalid vector")
             return [("PASS","Embedding endpoint reachable on numeric loopback"),("PASS",f"Embedding dimension: {dim}"),("PASS",f"Embedding test latency: {latency:.1f} ms")]
-        except Exception as exc: return [("BLOCKED",f"Embedding health check failed ({type(exc).__name__})")]
+        except Exception as exc: return [("BLOCKED",f"Embedding health check failed ({type(exc).__name__)})")]
 
     def _codebase_checks(self, entries: list[dict[str, Any]]):
         try: mcp=self.compatibility.active_mcp_readiness()
