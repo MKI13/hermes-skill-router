@@ -51,7 +51,7 @@ _SKILL_INTENT_ALIASES: tuple[tuple[tuple[str, ...], set[str]], ...] = (
         ("himalaya", "email", "e-mail", "mail-client", "mailbox"),
         {
             "email", "mail", "e-mail", "inbox", "postfach", "reply", "antwort",
-            "antworten", "nachricht", "kunde", "kunden", "customer",
+            "antworten", "nachricht",
         },
     ),
     (
@@ -364,8 +364,6 @@ def tokenize(text: str) -> list[str]:
         "tests": "test",
         "emails": "email",
         "mails": "mail",
-        "kunden": "customer",
-        "kunde": "customer",
         "kundenmail": "mail",
         "kundenmails": "mail",
         "kundenemail": "email",
