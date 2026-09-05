@@ -14,6 +14,24 @@ Next:
    hermes skill-router setup --apply
    ```
 
+3. Verify the active profile with the safe diagnostics:
+
+   ```bash
+   hermes skill-router doctor
+   ```
+
+4. Before a production rollout, run the read-only active-profile canary:
+
+   ```bash
+   hermes skill-router canary
+   ```
+
+   For a specific Hermes profile, select it with Hermes' global profile selector, for example:
+
+   ```bash
+   hermes --profile ef-sinn-development skill-router canary
+   ```
+
 Defaults:
 
 - deterministic routing
