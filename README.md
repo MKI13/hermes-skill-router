@@ -191,8 +191,6 @@ Stored follow-up metadata is limited to an opaque session key, previous primary/
 /skill-router canary
 /skill-router performance
 /skill-router events 20
-/skill-router profiles
-/skill-router setup
 /skill-router refresh
 /skill-router plan
 /skill-router inspect codebase-memory
@@ -202,6 +200,8 @@ Stored follow-up metadata is limited to an opaque session key, previous primary/
 /skill-router enforcement
 /skill-router recommend inspect this repository and find the implementation
 ```
+
+`profiles` and `setup` are terminal-only because they operate through Hermes' CLI profile/configuration surface.
 
 ### Terminal
 
@@ -216,6 +216,7 @@ hermes skill-router profiles --sync
 hermes skill-router setup
 hermes skill-router setup --dry-run
 hermes skill-router setup --apply
+hermes skill-router setup --sync
 hermes skill-router refresh
 hermes skill-router refresh --wait
 hermes skill-router plan
