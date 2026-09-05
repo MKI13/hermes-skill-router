@@ -14,6 +14,7 @@ DEPENDENCY_MISSING = "dependency_missing"
 BROKEN = "broken"
 DISABLED = "disabled"
 UNKNOWN = "unknown"
+READINESS_VERSION = 2
 
 READINESS_STATUSES = (
     READY,
@@ -128,7 +129,7 @@ def evaluate_readiness(
             requirements,
             checks,
             False,
-            ["One or more declared dependencies are missing."],
+            _dependency_reasons(checks, missing=True),
         )
     if unknown_dependency:
         return _result(
@@ -136,19 +137,22 @@ def evaluate_readiness(
             requirements,
             checks,
             False,
-            ["One or more declared dependencies could not be checked passively."],
+            _dependency_reasons(checks, unknown=True),
         )
     if setup_declared or missing_config or status_hint == SETUP_REQUIRED:
+        reasons = _setup_reasons(checks)
+        if setup_declared and not reasons:
+            reasons = ["Declared setup is incomplete."]
         return _result(
             SETUP_REQUIRED,
             requirements,
             checks,
             True,
-            ["Declared setup is incomplete."],
+            reasons,
         )
     if declared or status_hint == READY:
         return _result(READY, requirements, checks, False, [])
-    return _result(UNKNOWN, requirements, checks, False, [])
+    return _result(UNKNOWN, requirements, checks, False, ["No readiness requirements were declared."])
 
 
 def readiness_sort_key(entry: Mapping[str, Any]) -> int:
@@ -163,17 +167,95 @@ def _result(
     setup_needed: bool,
     reasons: list[str],
 ) -> dict[str, Any]:
+    selected_status = status if status in READINESS_STATUSES else UNKNOWN
+    missing = [
+        {"type": str(check.get("type") or "dependency"), "name": str(check.get("name") or "")[:200]}
+        for check in checks
+        if check.get("available") is False and check.get("type") != "config"
+    ][:50]
+    unknown = [
+        {"type": str(check.get("type") or "dependency"), "name": str(check.get("name") or "")[:200]}
+        for check in checks
+        if check.get("available") is None
+    ][:50]
+    setup = [
+        str(check.get("name") or "")[:200]
+        for check in checks
+        if check.get("type") == "config" and check.get("available") is False
+    ][:50]
+    summary = {
+        "declared": sum(len(requirements.get(key, [])) for key in _REQUIREMENT_KEYS),
+        "checked": len(checks),
+        "available": sum(check.get("available") is True for check in checks),
+        "missing": len(missing),
+        "unknown": len(unknown),
+        "setup": len(setup),
+    }
     return {
-        "readiness_status": status if status in READINESS_STATUSES else UNKNOWN,
+        "readiness_version": READINESS_VERSION,
+        "readiness_status": selected_status,
         "setup_needed": setup_needed,
         "requirements": requirements,
         "dependency_checks": checks,
-        "readiness_reasons": reasons[:5],
+        "missing_dependencies": missing,
+        "unknown_dependencies": unknown,
+        "setup_requirements": setup,
+        "readiness_summary": summary,
+        "readiness_reasons": _dedupe_reasons(reasons)[:10],
     }
 
 
 def _check(kind: str, name: str, available: bool | None) -> dict[str, Any]:
-    return {"type": kind, "name": name, "available": available}
+    state = "available" if available is True else "missing" if available is False else "unknown"
+    return {"type": kind, "name": name, "available": available, "state": state}
+
+
+def _dependency_reasons(
+    checks: list[dict[str, Any]],
+    *,
+    missing: bool = False,
+    unknown: bool = False,
+) -> list[str]:
+    reasons: list[str] = []
+    labels = {
+        "command": "command",
+        "python_module": "Python module",
+        "skill": "skill",
+        "mcp": "MCP",
+    }
+    for check in checks:
+        available = check.get("available")
+        kind = str(check.get("type") or "dependency")
+        if kind == "config":
+            continue
+        name = str(check.get("name") or "unknown")[:200]
+        label = labels.get(kind, "dependency")
+        if missing and available is False:
+            reasons.append(f"Missing {label}: {name}.")
+        elif unknown and available is None:
+            reasons.append(f"Could not passively verify {label}: {name}.")
+    return reasons or [
+        "One or more declared dependencies are missing."
+        if missing
+        else "One or more declared dependencies could not be checked passively."
+    ]
+
+
+def _setup_reasons(checks: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"Required config is not set: {str(check.get('name') or 'unknown')[:200]}."
+        for check in checks
+        if check.get("type") == "config" and check.get("available") is False
+    ]
+
+
+def _dedupe_reasons(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = " ".join(str(value or "").split())[:300]
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _safe_find_spec(module: str) -> Any:
