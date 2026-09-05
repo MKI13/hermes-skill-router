@@ -183,6 +183,55 @@ class ProductionRoutingEnhancements:
         overall = "BLOCKED" if any(x[0]=="BLOCKED" for x in checks) else "WARN" if any(x[0]=="WARN" for x in checks) else "PASS"
         return "\n".join(["Hermes Skill Router Doctor","",f"Overall: {overall}",""] + [f"{level:<7} {msg}" for level,msg in checks])
 
+    def canary_text(self) -> str:
+        """Run a read-only canary against the active Hermes profile."""
+        checks: list[tuple[str, str]] = []
+        profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
+        try:
+            self.runtime.ensure_catalog(force=False)
+            snapshot = self.runtime._snapshot()
+            entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
+            if not isinstance(entries, list):
+                raise RuntimeError("catalog entries unavailable")
+        except Exception:
+            entries = []
+            checks.append(("BLOCKED", "Active-profile skill catalog unavailable"))
+
+        try:
+            mcp = self.compatibility.active_mcp_readiness()
+        except Exception:
+            mcp = None
+        codebase = next((entry for entry in entries if isinstance(entry, dict) and "codebase-memory" in ((entry.get("requirements") or {}).get("mcps") or [])), None)
+        if codebase is not None and str(codebase.get("readiness_status") or "") not in {BROKEN, DISABLED}:
+            checks.append(("PASS", "Codebase Memory skill is ready"))
+        elif isinstance(mcp, dict) and mcp.get("codebase-memory") is True:
+            checks.append(("WARN", "Codebase Memory MCP is ready but routing skill is missing"))
+        else:
+            checks.append(("WARN", "Codebase Memory is not ready in the active profile"))
+
+        if codebase is not None:
+            primary = str(codebase.get("name") or "")
+            token = self._followup.set({"previous_primary_skill": primary, "previous_supporting_skills": [], "previous_policy_status": "valid"})
+            try:
+                followup, followup_method = self.followup_fallback("Mach weiter und teste es.", entries, [], "deterministic")
+                switch, switch_method = self.followup_fallback("Schreib jetzt eine E-Mail an den Kunden.", entries, [], "deterministic")
+                negated, negated_method = self.followup_fallback(f"Benutze {primary} dafür nicht.", entries, [], "deterministic")
+            finally:
+                self._followup.reset(token)
+            checks.append(("PASS" if followup and followup_method == "session-followup" else "BLOCKED", "Follow-up continuity preserved the code workflow"))
+            checks.append(("PASS" if not switch and switch_method == "deterministic" else "BLOCKED", "Topic switch does not reuse Codebase Memory"))
+            checks.append(("PASS" if not negated and negated_method == "deterministic" else "BLOCKED", "Negation prevents Codebase Memory reuse"))
+        else:
+            checks += [("SKIP", "Follow-up continuity test requires the Codebase Memory skill"), ("SKIP", "Topic-switch test requires the Codebase Memory skill"), ("SKIP", "Negation test requires the Codebase Memory skill")]
+
+        if str(self.runtime._routing_mode()) in {"hybrid", "embedding"}:
+            checks += self._embedding_checks()
+        else:
+            checks.append(("SKIP", f"Local embedding live check not required in routing_mode={self.runtime._routing_mode()}"))
+        checks.append(("WARN", "OpenViking is enabled; canary target expects it paused") if self._bool("openviking_enabled", False) else ("PASS", "OpenViking remains disabled"))
+        overall = "BLOCKED" if any(level == "BLOCKED" for level, _ in checks) else "WARN" if any(level == "WARN" for level, _ in checks) else "PASS"
+        return "\n".join(["Hermes Skill Router Canary", "", f"Profile: {profile}", f"Overall: {overall}", ""] + [f"{level:<7} {message}" for level, message in checks])
+
     def _embedding_checks(self):
         try:
             settings=self.runtime.embedding._settings(); client=self.runtime.embedding.client_factory(**settings["client"]); started=time.perf_counter(); vectors=client.embed(["Hermes Skill Router local embedding health check"]); latency=(time.perf_counter()-started)*1000
@@ -202,7 +251,10 @@ class ProductionRoutingEnhancements:
 
     def command(self, raw_args: str) -> str:
         action=str(raw_args or "").strip().casefold()
-        return self.doctor_text() if action=="doctor" else self.performance_text() if action=="performance" else self._command(raw_args)
+        if action=="doctor": return self.doctor_text()
+        if action=="performance": return self.performance_text()
+        if action=="canary": return self.canary_text()
+        return self._command(raw_args)
 
     def _session_key(self, session_id: str) -> str:
         return hashlib.sha256(str(session_id).encode()).hexdigest()[:24] if str(session_id or "").strip() else ""
