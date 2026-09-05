@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .inspection import render_skill_inspection
+from .version import VERSION as __version__
 
 
 def _install_readiness_inspection() -> None:

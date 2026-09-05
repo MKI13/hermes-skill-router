@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.11.0 — Unreleased
+
+- Connected routing decision telemetry through Policy -> Runtime -> the existing profile-scoped Audit. The dedicated object contains only confidence, original/final primary, automatic fallback flag, and a fixed reason code.
+- Added normalized telemetry to audit/recommend/quality diagnostics and observational fallback/no-fallback quality cohorts to aggregate audit, quality, and general shadow-learning views. Quality formulas and learning weights remain unchanged.
+- Reject arbitrary reason text and malformed values; do not treat string booleans as consent to a fallback, explicit user overrides as automatic fallbacks, intermediate blocked plans as executable, or older unmeasured records as historical measurements.
+- Added pipeline, reload/finalization, profile/session isolation, bounded history, privacy, malformed-input, and unchanged-scoring regression tests. Updated the old free-text audit assertion to distinguish an exact forbidden reason field from the new allowlisted fallback_reason code.
+- Aligned previously stale 0.8.0 package/manifest/skill/runtime metadata with the actual 0.11.0 development milestone. Added a canonical Python runtime version and regression checks across distributed metadata and current documentation.
+- Updated both READMEs and the operational skill. Clarified that diagnostic catalog refreshes may update Router-owned caches without applying profile configuration or gateway changes; this is not a guarantee of zero file writes.
+- No live Hermes-profile validation, main merge, release, gateway changes, active learning, or OpenViking activation is claimed by this milestone. The isolated-profile acceptance gate remains pending.
+
+## 0.10.0 — Development milestone, unreleased
+
+- Added a conservative confidence decision engine and connected it to the policy's unknown-versus-ready primary comparison.
+- Preserved explicit user choice and clearly more relevant unknown candidates; preferred ready candidates within a bounded relevance margin.
+- Preserved input order for equal scores and recorded policy changes without alphabetically inventing a different original priority.
+
+## 0.9.0 — Development milestone, unreleased
+
+- Added structured passive readiness evidence for commands, Python modules, required skills, MCPs, and configuration keys.
+- Added grouped inspect diagnostics and a bounded Doctor readiness summary with actionable skill ordering.
+- Added readiness-aware primary-policy regression coverage and the ready-versus-unknown policy correction.
+
 ## 0.8.0
 
 - Added a read-only `skill-router rollout-check` preflight with `READY`, `REVIEW`, and `BLOCKED` decisions before profile rollout.

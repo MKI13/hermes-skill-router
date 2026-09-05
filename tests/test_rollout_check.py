@@ -50,7 +50,9 @@ def test_rollout_check_ready_for_conservative_defaults():
     assert "enforcement_mode=warn" in text
     assert "learning_mode=shadow" in text
     assert "OpenViking disabled" in text
-    assert "Read-only:" in text
+    assert "Read-only for profile configuration:" in text
+    assert "Router-owned diagnostic caches may be refreshed." in text
+    assert "files were changed" not in text
 
 
 def test_rollout_check_review_when_optional_codebase_mcp_is_missing():

@@ -1,89 +1,70 @@
 # Hermes Skill Router
 
-An always-on, profile-scoped skill planner for Hermes Agent with deterministic routing, direct local Ollama embeddings, conservative session follow-up continuity, passive readiness checks, execution audit/quality, and optional OpenViking support.
+An always-on, profile-scoped skill planner for Hermes Agent with deterministic routing, optional local Ollama embeddings, conservative follow-up continuity, readiness checks, execution audit/quality, and optional OpenViking support.
 
-> Status: community release candidate **v0.8.0**. OpenViking remains **disabled by default** for the recommended v0.8.0 rollout.
+> **Development version v0.11.0 — unreleased.** The changes on this branch have not yet been validated in the intended isolated Hermes profile with its local model. A successful CI run is not production approval. OpenViking remains **disabled by default**.
 
-## What v0.8.0 is for
-
-The Router keeps Hermes in control while improving which installed skill is loaded for each task:
+## Architecture
 
 ```text
 User task
   -> Skill Router
      -> explicit/deterministic signals
      -> optional local embedding similarity
-     -> conservative follow-up continuity
+     -> conservative session follow-up continuity
      -> readiness + dependency policy
+     -> compact decision telemetry
   -> Hermes skill_view
   -> selected Skill
   -> MCP / tools used by that Skill
 ```
 
-The Router never turns MCP servers into routable skills. MCP-backed workflows are exposed through ordinary Hermes skills with `requirements.mcps`.
+Hermes remains the executing agent. The Router recommends ordinary Hermes skills; it never turns an MCP server directly into a routable skill. MCP-backed procedures declare `requirements.mcps`. Selected procedures are loaded through native `skill_view`, not injected as copied executable skill documents.
 
-## v0.8.0 highlights
+The repository bundles the native `skill-router` plugin, the operational `skill-router:skill-router` skill, and `skill-router:codebase-memory` for the exact active-profile MCP identity `codebase-memory`.
 
-- Added a read-only `rollout-check` preflight with `READY`, `REVIEW`, and `BLOCKED` decisions before a profile rollout.
-- The rollout preflight validates critical Hermes capabilities, catalog/hash readiness, conservative routing/enforcement/learning settings, local embedding health when required, Codebase Memory MCP/skill state, follow-up context, and paused OpenViking state.
-- Bundled `codebase-memory` skill for the `codebase-memory` MCP identity.
-- Canary requires both the Codebase Memory routing skill and the active profile's `codebase-memory` MCP to be ready before reporting PASS.
-- Conservative session follow-up routing for short requests such as “continue”, “fix it”, “test it”, or “commit it”.
-- Follow-up context stores routing metadata only; no prompts, responses, tool payloads, files, or credentials.
-- Richer versioned local embedding documents: name, description, category, tags, `use_when`, keywords, and `works_with`.
-- `hermes skill-router doctor` / `/skill-router doctor` for safe end-to-end diagnostics.
-- `hermes skill-router performance` / `/skill-router performance` for bounded local latency metrics.
-- Configuration/documentation consistency checks in CI.
-- OpenViking read/write controls remain available but `openviking_enabled` stays `false` by default.
+## Current development scope
 
-## Why this is a plugin plus skills
+This branch combines rollout preflight, Readiness 2.0, confidence-aware policy selection, and Routing Decision Telemetry 2.0. These are development milestones, not separate production release claims.
 
-A plain `SKILL.md` cannot stay active across turns or observe Hermes skill lifecycle events. This repository therefore contains:
+Readiness reports distinguish missing commands, Python modules, other skills, MCP definitions, and required configuration keys. `inspect` groups missing dependencies, unverified dependencies, setup requirements, and the Router action. Doctor adds a bounded readiness summary rather than dumping the entire catalog.
 
-- the native `skill-router` plugin for routing, policy, lifecycle, state, audit, quality, and diagnostics;
-- the bundled operational `skill-router:skill-router` skill for Router commands and troubleshooting;
-- the bundled `skill-router:codebase-memory` skill, whose readiness depends on the active profile's `codebase-memory` MCP definition.
+Confidence-aware policy comparison can retain a clearly more relevant `unknown` primary or prefer a similarly relevant `ready` candidate. The existing safety/dependency policy and explicit user requests remain authoritative. Confidence labels are routing heuristics, not calibrated probabilities or evidence that a skill executed successfully.
 
-Hermes still loads selected procedures through native `skill_view`. The Router does not inject copied skill documents as executable instructions.
+Telemetry now travels through **Policy -> Runtime -> Audit** and is displayed by `recommend`, `audit`, `quality`, and the general `learning` summary. It does not change routing scores, quality scores, or shadow-learning weights.
 
 ## Requirements
 
-- Hermes Agent with native plugin hooks used by the repository (`on_session_start`, `pre_llm_call`, `pre_tool_call`, `post_tool_call`, `post_llm_call`, and skill lifecycle support when available).
-- Hermes `skills` toolset enabled.
-- Python 3.11 or newer.
-- For hybrid routing: a local Ollama-compatible `/api/embed` endpoint bound to a numeric loopback address.
-- For Codebase Memory routing: an active-profile MCP server whose exact Hermes configuration key is `codebase-memory`.
-- Optional: OpenViking 0.4.17.1-compatible APIs. It is not required for the v0.8.0 recommended configuration.
+- Hermes Agent with the native plugin hooks used here: `on_session_start`, `pre_llm_call`, `pre_tool_call`, `post_tool_call`, `post_llm_call`, and lifecycle support when available.
+- Hermes `skills` toolset enabled and Python 3.11 or newer.
+- For hybrid/embedding routing: a local Ollama-compatible `/api/embed` endpoint bound to a numeric loopback address.
+- For Codebase Memory: an active-profile MCP configuration whose exact key is `codebase-memory`.
+- Optional OpenViking APIs compatible with the existing bridge; not needed for the recommended configuration.
 
-Compatibility is capability-detected rather than assumed from one Hermes version. CI keeps hard checks for known Hermes revisions and an informative `main` compatibility job.
+Capabilities are detected rather than inferred from a version string. CI runs the repository tests and plugin scans against pinned Hermes revisions, plus an informative current-`main` scan. These scans do not replace live Hermes integration tests.
 
-## Install
+## Installation and profile boundaries
 
-Preferred Hermes-first workflow:
-
-```text
-Install the Skill Router from MKI13/hermes-skill-router.
-```
-
-Equivalent terminal flow:
+A default-branch install does not select this development branch:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
-hermes skill-router setup
-hermes skill-router setup --dry-run
-hermes skill-router setup --apply
-hermes skill-router profiles
 ```
 
-Setup uses official profile-scoped Hermes commands. It does not copy profile state or merge profile skill catalogs. New/removed/renamed profiles can be reconciled explicitly with:
+Development validation must use an explicitly approved commit and an existing isolated test profile, after checking its configuration and backing up its Router state:
 
 ```bash
-hermes skill-router profiles --sync
+hermes --profile <test-profile> plugins install MKI13/hermes-skill-router --ref <reviewed-commit-sha> --enable
+hermes --profile <test-profile> skill-router setup --dry-run --target-profile <test-profile>
 ```
 
-## Recommended v0.8.0 configuration
+Do not substitute a production profile. Review the setup plan before any separate `setup --apply`. No test-profile setup, gateway restart, merge, release, or multi-profile rollout is implied by this documentation.
 
-For the conservative rollout, keep OpenViking paused and use deterministic or local hybrid routing:
+`profiles` provides discovery; `profiles --sync` and `setup --apply` are explicit write operations. Setup uses Hermes profile-scoped mechanisms, not copied or symlinked profile state. Newly installed skills are discovered through lifecycle events and bounded rescanning; installing only an MCP does not create a routable skill.
+
+## Conservative configuration
+
+Start with the default deterministic routing and keep OpenViking paused:
 
 ```yaml
 plugins:
@@ -91,94 +72,25 @@ plugins:
   entries:
     skill-router:
       settings:
-        routing_mode: hybrid
+        routing_mode: deterministic
         enforcement_mode: warn
         learning_mode: shadow
         followup_context_enabled: true
-        embedding_url: http://127.0.0.1:11436
-        embedding_model: qwen3-embedding:0.6b
-        embedding_dimensions: 1024
         openviking_enabled: false
 ```
 
-The local embedding service remains optional for deterministic routing. Hybrid routing requires the endpoint to be healthy; runtime failures still fail open to deterministic routing.
-
-## Rollout preflight
-
-Before enabling the Router in another profile, run:
-
-```bash
-hermes --profile <profile> skill-router rollout-check
-hermes --profile <profile> skill-router doctor
-hermes --profile <profile> skill-router canary
-```
-
-`rollout-check` is read-only and returns:
-
-- `READY`: conservative rollout defaults and required health checks are satisfied;
-- `REVIEW`: no hard blocker exists, but settings or optional dependencies need explicit review;
-- `BLOCKED`: a critical Hermes capability, catalog state, routing mode, or required local embedding health check prevents rollout.
-
-It never installs, enables, starts, stops, restarts, or modifies a profile, skill, MCP, gateway, or file. A `READY` result permits controlled testing; it never authorizes automatic rollout to other profiles.
-
-## Local embedding safety
-
-Hybrid/embedding mode keeps the existing strict boundary:
-
-- numeric loopback HTTP origin only;
-- no URL credentials, paths, queries, fragments, proxies, or redirects;
-- bounded response size and timeout;
-- exact vector count and dimension;
-- finite, non-zero vectors;
-- profile-scoped cache;
-- deterministic fallback on runtime embedding failure.
-
-v0.8.0 uses `EMBEDDING_DOCUMENT_VERSION = 2`. The cached vector identity includes this version plus the skill content/routing metadata fingerprint, so routing-document format changes cannot silently reuse stale vectors.
-
-## Codebase Memory integration
-
-The Router still routes only Hermes skills. Codebase Memory is therefore represented by the bundled `codebase-memory` skill:
+Local semantic routing is optional. After verifying the active profile's endpoint, the corresponding settings are:
 
 ```yaml
-requirements:
-  mcps:
-    - codebase-memory
+routing_mode: hybrid
+embedding_url: http://127.0.0.1:11436
+embedding_model: qwen3-embedding:0.6b
+embedding_dimensions: 1024
 ```
 
-Use it for repository structure, source-code architecture, implementation lookup, symbols, dependencies, references, and impact analysis before code changes.
+The example endpoint must actually match the local service. Deterministic mode does not require it. Runtime embedding failures fall back to deterministic routing; hybrid/embedding preflight requires the configured endpoint to pass its health check.
 
-Do **not** use it for ordinary email, translation, web research, calendar, invoices, or other non-code tasks.
-
-The Router never starts or reconfigures the MCP. `requirements.mcps` affects readiness only. If the MCP is present but no routable skill references it, `skill-router doctor` reports a warning instead of inventing a routing entry.
-
-The canary treats Codebase Memory as fully ready only when both the routing skill and the active profile MCP are ready. If either side is unavailable, the canary reports WARN and skips Codebase-Memory follow-up continuity checks.
-
-## Follow-up routing
-
-Hermes conversations often contain short turns such as:
-
-```text
-Analyze the repository and find the implementation.
--> PRIMARY: codebase-memory
-
-Now fix it.
-```
-
-v0.8.0 may reuse the previous Primary Skill only when all of the following are true:
-
-1. the message is a short referential follow-up;
-2. normal routing produced no selection;
-3. there is no explicit different skill request;
-4. the previous skill is still present and not broken/disabled;
-5. the message does not negate the previous skill;
-6. no `avoid_when` exclusion matches;
-7. the normal policy gate still accepts the result.
-
-A clear topic switch such as “Write an email to the customer now” does not inherit Codebase Memory.
-
-Stored follow-up metadata is limited to an opaque session key, previous primary/supporting skill names, routing category, policy status, and timestamp. No prompt or response text is retained.
-
-## Commands
+## Commands and side effects
 
 Inside Hermes:
 
@@ -199,52 +111,57 @@ Inside Hermes:
 /skill-router recommend inspect this repository and find the implementation
 ```
 
-Terminal:
+Terminal equivalents use `hermes --profile <profile> skill-router ...`; CLI refresh also supports `refresh --wait`.
+
+`audit`, `quality`, and the general `learning` summary read existing observations. `recommend` displays a sample decision without creating an execution-audit entry. Commands that call catalog discovery can refresh **Router-owned caches/state**; `recommend` can also rebuild derived shadow state. Doctor, canary, and preflight therefore must not be interpreted as a guarantee of zero filesystem writes. They do not apply profile configuration, install skills or MCPs, or start/restart gateways. In hybrid/embedding mode, diagnostics can send a bounded loopback health request.
+
+### Rollout preflight
 
 ```bash
-hermes skill-router status
-hermes skill-router doctor
-hermes skill-router rollout-check
-hermes skill-router canary
-hermes skill-router performance
-hermes skill-router events 20
-hermes skill-router refresh --wait
-hermes skill-router plan
-hermes skill-router inspect codebase-memory
-hermes skill-router audit last
-hermes skill-router quality last
-hermes skill-router learning
-hermes skill-router enforcement
-hermes skill-router recommend inspect this repository and find the implementation
+hermes --profile <test-profile> skill-router rollout-check
+hermes --profile <test-profile> skill-router doctor
+hermes --profile <test-profile> skill-router canary
 ```
 
-### Doctor
+`rollout-check` reports `READY`, `REVIEW`, or `BLOCKED`. It checks critical Hermes capabilities, catalog/hash availability, routing/enforcement/learning settings, follow-up context, required embedding health, Codebase Memory configuration/skill availability, and paused OpenViking.
 
-`doctor` checks Hermes capabilities, catalog availability, routing policy/audit/quality/learning availability, local embeddings when the active routing mode needs them, and Codebase Memory MCP/skill readiness. It never prints secret values or complete paths.
+`READY` means the preflight permits controlled testing, not that live execution passed or other profiles may be changed automatically. `REVIEW` requires examination of warnings; `BLOCKED` indicates a hard preflight failure.
 
-Expected disabled OpenViking output:
+### Doctor and canary
+
+Doctor reports `PASS`, `WARN`, or `BLOCKED`, with a readiness summary listing at most eight actionable skills and directing detailed inspection to `inspect`.
 
 ```text
 SKIP    OpenViking disabled by configuration
 ```
 
-Overall statuses are `PASS`, `WARN`, and `BLOCKED`.
+The Codebase Memory canary requires an available routing skill and a configured/enabled MCP. Missing MCP readiness yields WARN and skips the corresponding continuity checks. Passive MCP discovery is not a live RPC, search, or end-to-end execution test.
 
 ### Performance
 
-`performance` records only bounded numeric timing metadata:
+`performance` reports bounded `catalog_ms`, `embedding_ms`, `selection_ms`, `policy_ms`, and `total_ms`, with total p50/p95 and embedding-cache diagnostics. It does not store prompt/response or tool-payload content in performance state.
 
-```text
-catalog_ms
-embedding_ms
-selection_ms
-policy_ms
-total_ms
-```
+## Routing decision telemetry
 
-It reports the last sample plus total p50/p95 and embedding-cache diagnostics. Prompts, responses, tool arguments/results, files, and credentials are never stored.
+The existing profile-scoped audit stores an optional `routing_telemetry` object with exactly these fields:
 
-## Readiness
+| Field | Meaning |
+|---|---|
+| `confidence` | `high`, `medium`, `none`, or `not_assessed` |
+| `original_primary` | Catalog-validated primary before policy changes, or empty |
+| `final_primary` | Actual primary after policy validation, or empty |
+| `fallback_applied` | Boolean automatic primary replacement; not an explicit user override |
+| `fallback_reason` | Fixed code: `ready_within_margin`, `policy_replacement`, `unspecified`, or empty |
+
+`none` describes a decision with no final primary. `not_assessed` is used when the confidence engine did not assess the final candidate or when an older record contains no telemetry. Historical records are not backfilled with invented measurements. A blocked result cannot claim that an intermediate fallback became executable.
+
+Reasons are **allowlisted codes, not free text**. The telemetry path does not copy prompts, configuration values, tool payloads, or model explanations. Names come from the active catalog and are bounded and validated. Malformed values are normalized; telemetry failures do not invalidate an otherwise valid routing plan.
+
+`audit last`, `quality last`, and `recommend` expose the five fields. Aggregate audit/quality/learning views show confidence counts, automatic replacements, and descriptive quality means for fallback/no-fallback cohorts. Only finalized, assessable quality records contribute to those means. Missing records are counted separately. History follows `max_audit_entries` and the summary processes at most 1,000 records.
+
+**A high-confidence route can still fail to load its skill.** Confidence is not execution success. Cohort means are observational, not proof that fallback improves outcomes. The existing quality formula and shadow-learning weights are unchanged; no active learning is enabled.
+
+## Readiness and policy
 
 Skills may declare:
 
@@ -257,31 +174,39 @@ requirements:
   config: [GITHUB_TOKEN]
 ```
 
-Readiness states remain `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, and `disabled`. A skill without sufficient declarations remains `unknown`; the Router never silently assumes it is ready.
+States are `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, and `disabled`. Missing declarations do not imply readiness. Readiness 2.0 adds `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary`, and checks with `available | missing | unknown`; configuration diagnostics name required keys, not their values.
 
-## Policy, enforcement, audit, quality, learning
+The policy validates installed names, readiness, declared dependencies, alternatives, roles, ordering, and limits. Explicit requests do not re-enable broken or disabled skills or waive unusable skill dependencies. A setup warning is not permission to install anything automatically.
 
-The deterministic policy remains authoritative for every routing mode. It validates installed names, readiness, dependencies, alternatives, role ordering, and limits.
+Execution guard modes are `off`, `warn`, `primary`, and `all`; default `warn`. Learning modes are `off` and `shadow`; no active self-modifying routing is implemented.
 
-Execution guard modes are `off`, `warn`, `primary`, and `all`. Default remains `warn`.
+## Codebase Memory and follow-up continuity
 
-Audit/quality remain technical diagnostics. They do not measure the correctness of the final domain answer.
+The bundled `codebase-memory` skill declares `requirements.mcps: [codebase-memory]`. Use it for repository structure, architecture, symbols, implementation lookup, dependencies, references, and impact analysis before code changes. Do not use it for ordinary email, translation, general research, calendar, invoices, or other non-code work.
 
-Learning modes are `off` and `shadow`. No active learning mode exists in v0.8.0; shadow learning cannot change the real recommendation.
+The Router does not start, install, or reconfigure Codebase Memory. Each profile must expose its own authorized MCP configuration. This does not replace Hermes memory or require OpenViking.
+
+Short referential follow-ups such as “continue”, “fix it”, “test it”, or “mach weiter” may reuse a previous primary only after normal routing abstains. Explicit requests, negation, `avoid_when`, broken/disabled readiness, and policy validation still take precedence. Topic switches discard stale workflow context.
+
+Only routing metadata is retained in the bounded profile/session context: a hashed session key, previous skill names, routing category, policy status, and timestamp. No prompt or response text is retained there.
+
+## Local embedding safety
+
+Hybrid/embedding mode accepts numeric loopback HTTP origins only: no URL credentials, paths, queries, fragments, proxying, or redirects. Responses/timeouts are bounded; vector count and dimensions must match; vectors must be finite and non-zero. Caches remain profile-scoped.
+
+Embedding routing documents contain bounded name, description, category, tags, `use_when`, keywords, and `works_with`. `avoid_when` remains an exclusion signal. `EMBEDDING_DOCUMENT_VERSION = 2` is a cache-format version, independent of the plugin version; it participates in cache identity with routing metadata fingerprints.
 
 ## OpenViking
-
-OpenViking support remains in the codebase for compatibility, but the recommended v0.8.0 rollout keeps:
 
 ```yaml
 openviking_enabled: false
 ```
 
-When enabled later, separate `openviking_read_enabled` and `openviking_auto_write_enabled` controls remain available. Disabling the bridge prevents Router OpenViking reads/writes; Hermes' own memory-provider configuration remains independent.
+The optional bridge remains present but paused by default. `openviking_read_enabled` and `openviking_auto_write_enabled` are separate controls for a later explicitly reviewed activation. The master switch prevents Router bridge reads/writes; Hermes' independent memory-provider configuration is not modified.
 
 ## Configuration reference
 
-Every key below is defined by `plugin.yaml`. CI verifies that both READMEs document the same keys and defaults.
+CI checks these exact keys/defaults against `plugin.yaml` and the German README.
 
 | Setting | Type | Default |
 |---|---|---|
@@ -326,18 +251,7 @@ Every key below is defined by `plugin.yaml`. CI verifies that both READMEs docum
 
 Allowed modes: `routing_mode` = `deterministic | hybrid | embedding | model`; `enforcement_mode` = `off | warn | primary | all`; `learning_mode` = `off | shadow`.
 
-## Security and privacy
-
-- Profile state is isolated by opaque canonical profile scope.
-- Session continuity uses a hashed session key and routing metadata only.
-- No prompts, responses, tool payloads/results, files, or credentials are written to follow-up/performance state.
-- Codebase Memory MCP details are inspected passively; credentials and environment values are never printed.
-- Rollout preflight is read-only and cannot modify profiles or gateways.
-- `skill_view` remains the execution path for selected skills.
-- Missing/failed local embeddings fail open to deterministic routing at runtime; rollout preflight blocks hybrid/embedding deployment when the configured endpoint is unhealthy.
-- OpenViking remains disabled by default.
-
-## Development and CI
+## Development and validation
 
 ```bash
 python -m pytest -q
@@ -347,7 +261,9 @@ python -m compileall -q .
 hermes plugins doctor . --ci
 ```
 
-CI tests Python 3.11, 3.12, and 3.13, pinned Hermes compatibility/security revisions, and a non-blocking Hermes `main` compatibility check.
+Tests cover policy/audit integration, the production wrapper, finalization and reloads, profile/session separation, bounded history, malformed telemetry, secret-free reason codes, and unchanged quality/learning behavior. Version synchronization includes `pyproject.toml`, `plugin.yaml`, both bundled skills, package/runtime version, and current documentation markers.
+
+GitHub CI runs Python 3.11/3.12/3.13, benchmarks, documentation synchronization, compilation, two pinned Hermes plugin scans, and an informative current-main scan. Live isolated-profile testing with the intended local model, Codebase Memory, and embedding service is still a separate acceptance gate before merging or releasing.
 
 ## License
 

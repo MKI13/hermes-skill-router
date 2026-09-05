@@ -1,4 +1,4 @@
-"""v0.8.0 production helpers: follow-up continuity, diagnostics, rollout preflight and richer embeddings."""
+"""Production helpers: follow-up continuity, diagnostics, rollout preflight and richer embeddings."""
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -15,8 +15,8 @@ from . import runtime as runtime_module
 from .catalog import is_negated_name, score_entry
 from .policy import detect_explicit_skill_names
 from .readiness import BROKEN, DISABLED
+from .version import VERSION
 
-VERSION = "0.8.0"
 EMBEDDING_DOCUMENT_VERSION = 2
 _CONTEXT_KEY = "router.followup_context.v1"
 _PERF_KEY = "router.performance.v1"
@@ -179,12 +179,12 @@ class ProductionRoutingEnhancements:
         if str(self.runtime._routing_mode()) in {"hybrid","embedding"}: checks += self._embedding_checks()
         else: checks.append(("SKIP",f"Embedding health check not required in routing_mode={self.runtime._routing_mode()}"))
         checks += self._codebase_checks(entries if isinstance(entries,list) else [])
-        checks.append(("WARN","OpenViking enabled; v0.8.0 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
+        checks.append(("WARN",f"OpenViking enabled; v{VERSION} rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
         overall = "BLOCKED" if any(x[0]=="BLOCKED" for x in checks) else "WARN" if any(x[0]=="WARN" for x in checks) else "PASS"
         return "\n".join(["Hermes Skill Router Doctor","",f"Overall: {overall}",""] + [f"{level:<7} {msg}" for level,msg in checks])
 
     def rollout_text(self) -> str:
-        """Return a read-only rollout decision for the active profile."""
+        """Return a rollout decision without applying profile configuration changes."""
         checks: list[tuple[str, str]] = []
         profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
         mode = str(self.runtime._routing_mode())
@@ -239,11 +239,11 @@ class ProductionRoutingEnhancements:
         return "\n".join([
             "Hermes Skill Router Rollout Check", "", f"Profile: {profile}", f"Version: {VERSION}",
             f"Decision: {decision}", "", *[f"{level:<7} {message}" for level, message in checks],
-            "", "Read-only: no profile settings, skills, MCPs, gateway state, or files were changed.",
+            "", "Read-only for profile configuration: no settings, skills, MCPs or gateways were modified. Router-owned diagnostic caches may be refreshed.",
         ])
 
     def canary_text(self) -> str:
-        """Run a read-only canary against the active Hermes profile."""
+        """Run a diagnostic canary without applying profile configuration changes."""
         checks: list[tuple[str, str]] = []
         profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
         try:
