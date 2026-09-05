@@ -2,9 +2,9 @@
 
 An always-on, profile-scoped skill planner for Hermes Agent with deterministic routing, direct local Ollama embeddings, conservative session follow-up continuity, passive readiness checks, execution audit/quality, and optional OpenViking support.
 
-> Status: community release candidate **v0.7.0**. OpenViking remains **disabled by default** for the recommended v0.7.0 rollout.
+> Status: community release candidate **v0.7.1**. OpenViking remains **disabled by default** for the recommended v0.7.1 rollout.
 
-## What v0.7.0 is for
+## What v0.7.1 is for
 
 The Router keeps Hermes in control while improving which installed skill is loaded for each task:
 
@@ -22,9 +22,10 @@ User task
 
 The Router never turns MCP servers into routable skills. MCP-backed workflows are exposed through ordinary Hermes skills with `requirements.mcps`.
 
-## v0.7.0 highlights
+## v0.7.1 highlights
 
 - Bundled `codebase-memory` skill for the `codebase-memory` MCP identity.
+- Canary now requires both the Codebase Memory routing skill and the active profile's `codebase-memory` MCP to be ready before reporting PASS.
 - Conservative session follow-up routing for short requests such as “continue”, “fix it”, “test it”, or “commit it”.
 - Follow-up context stores routing metadata only; no prompts, responses, tool payloads, files, or credentials.
 - Richer versioned local embedding documents: name, description, category, tags, `use_when`, keywords, and `works_with`.
@@ -50,7 +51,7 @@ Hermes still loads selected procedures through native `skill_view`. The Router d
 - Python 3.11 or newer.
 - For hybrid routing: a local Ollama-compatible `/api/embed` endpoint bound to a numeric loopback address.
 - For Codebase Memory routing: an active-profile MCP server whose exact Hermes configuration key is `codebase-memory`.
-- Optional: OpenViking 0.4.17.1-compatible APIs. It is not required for the v0.7.0 recommended configuration.
+- Optional: OpenViking 0.4.17.1-compatible APIs. It is not required for the v0.7.1 recommended configuration.
 
 Compatibility is capability-detected rather than assumed from one Hermes version. CI keeps hard checks for known Hermes revisions and an informative `main` compatibility job.
 
@@ -78,7 +79,7 @@ Setup uses official profile-scoped Hermes commands. It does not copy profile sta
 hermes skill-router profiles --sync
 ```
 
-## Recommended v0.7.0 configuration
+## Recommended v0.7.1 configuration
 
 For the current rollout, keep OpenViking paused and use deterministic or local hybrid routing:
 
@@ -112,7 +113,7 @@ Hybrid/embedding mode keeps the existing strict boundary:
 - profile-scoped cache;
 - deterministic fallback on any embedding failure.
 
-v0.7.0 uses `EMBEDDING_DOCUMENT_VERSION = 2`. The cached vector identity includes this version plus the skill content/routing metadata fingerprint, so routing-document format changes cannot silently reuse stale vectors.
+v0.7.1 uses `EMBEDDING_DOCUMENT_VERSION = 2`. The cached vector identity includes this version plus the skill content/routing metadata fingerprint, so routing-document format changes cannot silently reuse stale vectors.
 
 ## Codebase Memory integration
 
@@ -130,6 +131,8 @@ Do **not** use it for ordinary email, translation, web research, calendar, invoi
 
 The Router never starts or reconfigures the MCP. `requirements.mcps` affects readiness only. If the MCP is present but no routable skill references it, `skill-router doctor` reports a warning instead of inventing a routing entry.
 
+The v0.7.1 canary treats Codebase Memory as fully ready only when both the routing skill and the active profile MCP are ready. If either side is unavailable, the canary reports WARN and skips Codebase-Memory follow-up continuity checks.
+
 ## Follow-up routing
 
 Hermes conversations often contain short turns such as:
@@ -141,7 +144,7 @@ Analyze the repository and find the implementation.
 Now fix it.
 ```
 
-v0.7.0 may reuse the previous Primary Skill only when all of the following are true:
+v0.7.1 may reuse the previous Primary Skill only when all of the following are true:
 
 1. the message is a short referential follow-up;
 2. normal routing produced no selection;
@@ -240,11 +243,11 @@ Execution guard modes are `off`, `warn`, `primary`, and `all`. Default remains `
 
 Audit/quality remain technical diagnostics. They do not measure the correctness of the final domain answer.
 
-Learning modes are `off` and `shadow`. No active learning mode exists in v0.7.0; shadow learning cannot change the real recommendation.
+Learning modes are `off` and `shadow`. No active learning mode exists in v0.7.1; shadow learning cannot change the real recommendation.
 
 ## OpenViking
 
-OpenViking support remains in the codebase for compatibility, but the recommended v0.7.0 rollout keeps:
+OpenViking support remains in the codebase for compatibility, but the recommended v0.7.1 rollout keeps:
 
 ```yaml
 openviking_enabled: false
