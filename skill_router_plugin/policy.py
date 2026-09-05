@@ -227,18 +227,38 @@ def _apply_policy(
     if not valid_candidates:
         return _result([], warnings, "blocked", changes)
 
-    primary = next(
+    explicit_primary = next(
         (
             item
             for explicit_name in explicit_order
             for item in valid_candidates
             if item["name"] == explicit_name
         ),
-        next(
-            (item for item in valid_candidates if item["requested_role"] == "primary"),
-            valid_candidates[0],
-        ),
+        None,
     )
+    requested_primary = next(
+        (item for item in valid_candidates if item["requested_role"] == "primary"),
+        None,
+    )
+    ready_primary = next(
+        (item for item in valid_candidates if item["readiness_status"] == READY),
+        None,
+    )
+    primary = explicit_primary or requested_primary or ready_primary or valid_candidates[0]
+    if (
+        explicit_primary is None
+        and requested_primary is not None
+        and requested_primary["readiness_status"] == UNKNOWN
+        and ready_primary is not None
+        and ready_primary is not requested_primary
+    ):
+        primary = ready_primary
+        changed = True
+        _append(
+            changes,
+            f"Preferred ready skill as Primary over unknown skill: {requested_primary['name']}",
+        )
+
     for item in valid_candidates:
         normalized_role = "primary" if item is primary else "supporting"
         if item["requested_role"] != normalized_role:
