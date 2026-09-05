@@ -7,11 +7,13 @@ from types import MethodType
 
 try:
     from .skill_router_plugin.compat import HermesCompatibility
+    from .skill_router_plugin.doctor_readiness import render_readiness_doctor
     from .skill_router_plugin.production import install_production_enhancements
     from .skill_router_plugin.profiles import ProfileSetupCoordinator
     from .skill_router_plugin.runtime import SkillRouterRuntime
 except ImportError:
     from skill_router_plugin.compat import HermesCompatibility
+    from skill_router_plugin.doctor_readiness import render_readiness_doctor
     from skill_router_plugin.production import install_production_enhancements
     from skill_router_plugin.profiles import ProfileSetupCoordinator
     from skill_router_plugin.runtime import SkillRouterRuntime
@@ -114,9 +116,11 @@ def register(ctx) -> None:
             print(runtime.status_text())
             return 0
         if action == "doctor":
-            text = enhancements.doctor_text()
+            base_text = enhancements.doctor_text()
+            readiness_text = render_readiness_doctor(runtime._snapshot())
+            text = base_text + "\n\n" + readiness_text
             print(text)
-            return 2 if "Overall: BLOCKED" in text else 1 if "Overall: WARN" in text else 0
+            return 2 if "Overall: BLOCKED" in base_text else 1 if "Overall: WARN" in base_text else 0
         if action == "rollout-check":
             text = enhancements.rollout_text()
             print(text)
