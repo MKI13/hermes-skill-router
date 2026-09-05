@@ -24,7 +24,7 @@ def register(ctx) -> None:
     enhancements = install_production_enhancements(runtime, compatibility)
 
     # Preserve Hermes' and the existing test contract that a registered runtime
-    # hook is still bound to SkillRouterRuntime while delegating v0.7.1 behavior.
+    # hook is still bound to SkillRouterRuntime while delegating v0.8.0 behavior.
     def production_pre_llm_call(runtime_self, **kwargs):
         del runtime_self
         return enhancements.pre_llm_call(**kwargs)
@@ -69,9 +69,9 @@ def register(ctx) -> None:
     ctx.register_command(
         name="skill-router",
         handler=runtime.command,
-        description="Inspect, diagnose, benchmark, canary-test, refresh, or test the profile skill routing plan.",
+        description="Inspect, diagnose, preflight, benchmark, canary-test, refresh, or test the profile skill routing plan.",
         args_hint=(
-            "[status|doctor|canary|performance|events [N]|refresh|plan|inspect <skill>|audit [last|N]|"
+            "[status|doctor|rollout-check|canary|performance|events [N]|refresh|plan|inspect <skill>|audit [last|N]|"
             "quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
         ),
     )
@@ -80,6 +80,7 @@ def register(ctx) -> None:
         commands = parser.add_subparsers(dest="skill_router_action")
         commands.add_parser("status", help="Show routing-plan status")
         commands.add_parser("doctor", help="Run safe end-to-end Router diagnostics")
+        commands.add_parser("rollout-check", help="Run a read-only conservative rollout preflight")
         commands.add_parser("canary", help="Run a read-only active-profile production canary")
         commands.add_parser("performance", help="Show bounded local routing latency metrics")
         events = commands.add_parser("events", help="Show recent skill catalog changes")
@@ -116,6 +117,10 @@ def register(ctx) -> None:
             text = enhancements.doctor_text()
             print(text)
             return 2 if "Overall: BLOCKED" in text else 1 if "Overall: WARN" in text else 0
+        if action == "rollout-check":
+            text = enhancements.rollout_text()
+            print(text)
+            return 2 if "Decision: BLOCKED" in text else 1 if "Decision: REVIEW" in text else 0
         if action == "canary":
             text = enhancements.canary_text()
             print(text)
@@ -186,7 +191,7 @@ def register(ctx) -> None:
             return 0
         print(
             "Usage: hermes skill-router "
-            "{status|doctor|canary|performance|events|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}"
+            "{status|doctor|rollout-check|canary|performance|events|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}"
         )
         return 2
 
