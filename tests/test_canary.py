@@ -75,8 +75,11 @@ class Compatibility:
         mcp_discovery=True,
     )
 
+    def __init__(self, *, codebase_mcp_ready: bool = True):
+        self.codebase_mcp_ready = codebase_mcp_ready
+
     def active_mcp_readiness(self):
-        return {"codebase-memory": True}
+        return {"codebase-memory": self.codebase_mcp_ready}
 
 
 def test_canary_passes_on_ready_codebase_profile():
@@ -86,7 +89,7 @@ def test_canary_passes_on_ready_codebase_profile():
     assert "Hermes Skill Router Canary" in text
     assert "Profile: ef-sinn-development" in text
     assert "Overall: PASS" in text
-    assert "Codebase Memory skill is ready" in text
+    assert "Codebase Memory skill and MCP are ready" in text
     assert "Follow-up continuity preserved the code workflow" in text
     assert "Topic switch does not reuse Codebase Memory" in text
     assert "Negation prevents Codebase Memory reuse" in text
@@ -102,3 +105,17 @@ def test_canary_warns_when_codebase_skill_missing():
 
     assert "Overall: WARN" in text
     assert "Codebase Memory MCP is ready but routing skill is missing" in text
+    assert "Follow-up continuity test requires ready Codebase Memory skill and MCP" in text
+
+
+def test_canary_warns_when_codebase_mcp_missing_even_if_skill_exists():
+    enhancement = ProductionRoutingEnhancements(
+        Runtime(), Compatibility(codebase_mcp_ready=False)
+    )
+
+    text = enhancement.canary_text()
+
+    assert "Overall: WARN" in text
+    assert "Codebase Memory routing skill is available but MCP is not ready" in text
+    assert "Codebase Memory skill and MCP are ready" not in text
+    assert "Follow-up continuity test requires ready Codebase Memory skill and MCP" in text
