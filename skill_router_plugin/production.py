@@ -1,4 +1,4 @@
-"""v0.7.1 production helpers: follow-up continuity, doctor, performance and richer embeddings."""
+"""v0.8.0 production helpers: follow-up continuity, diagnostics, rollout preflight and richer embeddings."""
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -16,11 +16,11 @@ from .catalog import is_negated_name, score_entry
 from .policy import detect_explicit_skill_names
 from .readiness import BROKEN, DISABLED
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 EMBEDDING_DOCUMENT_VERSION = 2
 _CONTEXT_KEY = "router.followup_context.v1"
 _PERF_KEY = "router.performance.v1"
-_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v071", default=None)
+_ACTIVE: ContextVar["ProductionRoutingEnhancements | None"] = ContextVar("router_v080", default=None)
 _ORIGINAL_SELECT: Callable[..., Any] | None = None
 _FOLLOWUP = re.compile(
     r"^(?:ok[,.!?]?\s*)?(?:mach(?:e)?\s+weiter|weiter|jetzt\s+(?:korrigier|änder|aender|test|prüf|pruef|commit|push)|"
@@ -179,9 +179,68 @@ class ProductionRoutingEnhancements:
         if str(self.runtime._routing_mode()) in {"hybrid","embedding"}: checks += self._embedding_checks()
         else: checks.append(("SKIP",f"Embedding health check not required in routing_mode={self.runtime._routing_mode()}"))
         checks += self._codebase_checks(entries if isinstance(entries,list) else [])
-        checks.append(("WARN","OpenViking enabled; v0.7.1 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
+        checks.append(("WARN","OpenViking enabled; v0.8.0 rollout recommendation is disabled") if self._bool("openviking_enabled",False) else ("SKIP","OpenViking disabled by configuration"))
         overall = "BLOCKED" if any(x[0]=="BLOCKED" for x in checks) else "WARN" if any(x[0]=="WARN" for x in checks) else "PASS"
         return "\n".join(["Hermes Skill Router Doctor","",f"Overall: {overall}",""] + [f"{level:<7} {msg}" for level,msg in checks])
+
+    def rollout_text(self) -> str:
+        """Return a read-only rollout decision for the active profile."""
+        checks: list[tuple[str, str]] = []
+        profile = str(getattr(self.runtime.profile, "name", "unknown"))[:100]
+        mode = str(self.runtime._routing_mode())
+        enforcement = str(self.ctx.get_config("enforcement_mode", "warn") or "warn")
+        learning = str(self.ctx.get_config("learning_mode", "shadow") or "shadow")
+
+        critical = (("raw_skill_reader", "Hermes raw skill reader"), ("skill_execution_guard", "Hermes execution guard"))
+        for attr, label in critical:
+            checks.append(("PASS" if getattr(self.compatibility.capabilities, attr, False) else "BLOCKED", label))
+
+        try:
+            self.runtime.ensure_catalog(force=False)
+            snapshot = self.runtime._snapshot()
+            entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
+            if not isinstance(entries, list) or not snapshot.get("catalog_hash"):
+                raise RuntimeError("catalog unavailable")
+            checks.append(("PASS", f"Catalog ready ({len(entries)} skills)"))
+        except Exception:
+            entries = []
+            checks.append(("BLOCKED", "Catalog or catalog hash unavailable"))
+
+        if mode in {"deterministic", "hybrid"}:
+            checks.append(("PASS", f"routing_mode={mode}"))
+        elif mode == "embedding":
+            checks.append(("WARN", "routing_mode=embedding has no deterministic primary signal requirement"))
+        elif mode == "model":
+            checks.append(("WARN", "routing_mode=model is not recommended for the conservative rollout"))
+        else:
+            checks.append(("BLOCKED", f"Unsupported routing_mode={mode}"))
+
+        if enforcement == "warn":
+            checks.append(("PASS", "enforcement_mode=warn"))
+        else:
+            checks.append(("WARN", f"enforcement_mode={enforcement}; conservative rollout target is warn"))
+        if learning == "shadow":
+            checks.append(("PASS", "learning_mode=shadow"))
+        else:
+            checks.append(("WARN", f"learning_mode={learning}; conservative rollout target is shadow"))
+        checks.append(("PASS", "Follow-up context enabled") if self._bool("followup_context_enabled", True) else ("WARN", "Follow-up context disabled"))
+
+        if mode in {"hybrid", "embedding"}:
+            checks += self._embedding_checks()
+        else:
+            checks.append(("SKIP", f"Embedding live check not required in routing_mode={mode}"))
+
+        checks += self._codebase_checks(entries)
+        checks.append(("WARN", "OpenViking enabled; conservative rollout target expects it paused") if self._bool("openviking_enabled", False) else ("PASS", "OpenViking disabled"))
+
+        blocked = any(level == "BLOCKED" for level, _ in checks)
+        warned = any(level == "WARN" for level, _ in checks)
+        decision = "BLOCKED" if blocked else "REVIEW" if warned else "READY"
+        return "\n".join([
+            "Hermes Skill Router Rollout Check", "", f"Profile: {profile}", f"Version: {VERSION}",
+            f"Decision: {decision}", "", *[f"{level:<7} {message}" for level, message in checks],
+            "", "Read-only: no profile settings, skills, MCPs, gateway state, or files were changed.",
+        ])
 
     def canary_text(self) -> str:
         """Run a read-only canary against the active Hermes profile."""
@@ -261,6 +320,7 @@ class ProductionRoutingEnhancements:
     def command(self, raw_args: str) -> str:
         action=str(raw_args or "").strip().casefold()
         if action=="doctor": return self.doctor_text()
+        if action=="rollout-check": return self.rollout_text()
         if action=="performance": return self.performance_text()
         if action=="canary": return self.canary_text()
         return self._command(raw_args)
