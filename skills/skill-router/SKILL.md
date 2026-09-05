@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Inspect routing plans, readiness, diagnostics, performance, and execution audits.
-version: 0.7.0
+version: 0.7.1
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -61,7 +61,7 @@ The Router never routes an MCP server directly. An MCP-backed workflow must be r
 
 ## Follow-up Continuity
 
-v0.7.0 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
+v0.7.1 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
 
 Continuity is deliberately weak. It is used only when normal routing abstains and never overrides:
 
@@ -83,6 +83,8 @@ The existing safety boundary remains mandatory: numeric loopback HTTP origin onl
 
 The bundled `codebase-memory` skill should be used for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. Its readiness depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
+In v0.7.1 the production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
+
 ## Doctor
 
 `/skill-router doctor` and `hermes skill-router doctor` perform safe diagnostics for Hermes capabilities, catalog state, local embeddings when required, Codebase Memory MCP/skill readiness, and Router subsystems. OpenViking is reported as `SKIP` when disabled.
@@ -95,7 +97,7 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 
 ## Shadow Learning
 
-`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.7.0.
+`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.7.1.
 
 ## Procedure
 
@@ -114,4 +116,4 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 - Never route directly to MCP tools.
 - Never substitute raw model output for a blocked policy result.
 - Never treat audit, quality, shadow learning, or performance metrics as proof that Hermes' final domain answer is correct.
-- OpenViking remains optional and disabled by default in the recommended v0.7.0 rollout.
+- OpenViking remains optional and disabled by default in the recommended v0.7.1 rollout.
