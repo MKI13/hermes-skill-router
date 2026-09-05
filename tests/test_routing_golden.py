@@ -18,9 +18,9 @@ CALIBRATION_FIXTURE = Path(__file__).parent / "fixtures" / "production_score_cal
 
 def cases() -> list[dict]:
     document = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert document["version"] == 1
+    assert document["version"] == 2
     values = document["cases"]
-    assert 30 <= len(values) <= 50
+    assert 30 <= len(values) <= 55
     ids = [item["id"] for item in values]
     assert len(ids) == len(set(ids))
     return values

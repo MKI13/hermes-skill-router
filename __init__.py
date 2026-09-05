@@ -24,7 +24,7 @@ def register(ctx) -> None:
     enhancements = install_production_enhancements(runtime, compatibility)
 
     # Preserve Hermes' and the existing test contract that a registered runtime
-    # hook is still bound to SkillRouterRuntime while delegating v0.7.1 behavior.
+    # hook is still bound to SkillRouterRuntime while delegating v0.8.0 behavior.
     def production_pre_llm_call(runtime_self, **kwargs):
         del runtime_self
         return enhancements.pre_llm_call(**kwargs)

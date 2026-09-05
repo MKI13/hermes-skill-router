@@ -26,17 +26,18 @@ _NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 _READINESS_SCORE_ADJUSTMENT = {
-    READY: 1.0,
+    READY: 2.0,
     UNKNOWN: 0.0,
-    SETUP_REQUIRED: -1.0,
-    DEPENDENCY_MISSING: -2.0,
-    BROKEN: -3.0,
-    DISABLED: -4.0,
+    SETUP_REQUIRED: -6.0,
+    DEPENDENCY_MISSING: -20.0,
+    BROKEN: -100.0,
+    DISABLED: -100.0,
 }
 _NAME_TERM_WEIGHT = 8.0
 _KEYWORD_TERM_WEIGHT = 4.0
 _DESCRIPTION_TERM_WEIGHT = 3.0
 _USE_WHEN_TERM_WEIGHT = 2.0
+_INTENT_ALIAS_TERM_WEIGHT = 20.0
 _EXACT_NAME_WEIGHT = 12.0
 _OPENVIKING_WEIGHT = 20.0
 _AVOID_WHEN_PENALTY = 12.0
@@ -45,6 +46,22 @@ _STOP_WORDS = {
     "ein", "eine", "for", "from", "für", "ist", "mit", "oder", "the", "this",
     "und", "use", "using", "von", "when", "with", "you", "your", "zur",
 }
+_SKILL_INTENT_ALIASES: tuple[tuple[tuple[str, ...], set[str]], ...] = (
+    (
+        ("himalaya", "email", "e-mail", "mail-client", "mailbox"),
+        {
+            "email", "mail", "e-mail", "inbox", "postfach", "reply", "antwort",
+            "antworten", "nachricht",
+        },
+    ),
+    (
+        ("calendar", "gcal", "google-calendar", "ical", "caldav"),
+        {
+            "calendar", "kalender", "termin", "meeting", "event", "appointment",
+            "schedule", "planen", "eintragen",
+        },
+    ),
+)
 
 
 def _json_object(raw: str) -> dict[str, Any]:
@@ -200,18 +217,20 @@ def rank_entries(task: str, entries: Iterable[dict[str, Any]]) -> list[tuple[flo
 
 
 def score_entry(task: str, entry: dict[str, Any]) -> dict[str, float]:
-    """Return the deterministic score and its lexical, retrieval, and policy components."""
+    """Return the deterministic score and its lexical, intent, retrieval, and policy components."""
     task_terms = set(tokenize(task))
     name = str(entry.get("name") or "").strip()
     name_terms = set(tokenize(name.replace("-", " ")))
     keyword_terms = set(_strings(entry.get("keywords")))
     description_terms = set(tokenize(str(entry.get("description") or "")))
     use_when_terms = set(tokenize(" ".join(_strings(entry.get("use_when")))))
+    intent_terms = _skill_intent_terms(name, str(entry.get("description") or ""), str(entry.get("category") or ""))
     breakdown: dict[str, float] = {
         "name": _NAME_TERM_WEIGHT * len(task_terms & name_terms),
         "keywords": _KEYWORD_TERM_WEIGHT * len(task_terms & keyword_terms),
         "description": _DESCRIPTION_TERM_WEIGHT * len(task_terms & description_terms),
         "use_when": _USE_WHEN_TERM_WEIGHT * len(task_terms & use_when_terms),
+        "intent_alias": _INTENT_ALIAS_TERM_WEIGHT * min(1, len(task_terms & intent_terms)),
     }
 
     try:
@@ -229,6 +248,15 @@ def score_entry(task: str, entry: dict[str, Any]) -> dict[str, float]:
     breakdown["readiness"] = _READINESS_SCORE_ADJUSTMENT.get(status, 0.0)
     breakdown["score"] = breakdown["relevance_score"] + breakdown["readiness"]
     return breakdown
+
+
+def _skill_intent_terms(name: str, description: str, category: str) -> set[str]:
+    identity = " ".join((name, description, category)).casefold()
+    terms: set[str] = set()
+    for markers, aliases in _SKILL_INTENT_ALIASES:
+        if any(marker in identity for marker in markers):
+            terms.update(aliases)
+    return terms
 
 
 def _contains_name(task: str, name: str) -> bool:
@@ -334,6 +362,16 @@ def tokenize(text: str) -> list[str]:
         "requests": "request",
         "systematically": "systematic",
         "tests": "test",
+        "emails": "email",
+        "mails": "mail",
+        "kundenmail": "mail",
+        "kundenmails": "mail",
+        "kundenemail": "email",
+        "kundenemails": "email",
+        "termine": "termin",
+        "kalenders": "kalender",
+        "meetings": "meeting",
+        "events": "event",
     }
     for word in words:
         normalized.append(word)

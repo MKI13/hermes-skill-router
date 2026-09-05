@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- Added conservative deterministic intent aliases for known mail and calendar skill families so installed skills such as `himalaya` and calendar integrations can be selected from German or English task wording without globally forcing a match.
+- Strengthened readiness weighting for automatic routing: `setup_required` and `dependency_missing` candidates are suppressed much more strongly, while `broken` and `disabled` candidates cannot win through lexical noise.
+- Expanded the golden routing fixture with German and English mail/calendar cases plus an additional generic no-skill message case.
+- Added Hermes-terminal-style `HERMES SKILL ROUTER` branding to both `README.md` and `README.de.md` and expanded the documented command surface for Hermes and terminal use.
+- Kept deterministic routing, warn enforcement, shadow learning, and `openviking_enabled: false` as the recommended rollout defaults.
+
 ## 0.7.1
 
 - Fixed the production canary so Codebase Memory reports PASS only when both the routable `codebase-memory` skill and the active profile's `codebase-memory` MCP are ready.
