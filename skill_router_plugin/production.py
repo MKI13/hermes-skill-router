@@ -247,7 +247,7 @@ class ProductionRoutingEnhancements:
             vector=vectors[0]; dim=int(settings["dimensions"])
             if len(vectors)!=1 or len(vector)!=dim or not all(math.isfinite(float(v)) for v in vector) or not any(float(v)!=0 for v in vector): raise RuntimeError("invalid vector")
             return [("PASS","Embedding endpoint reachable on numeric loopback"),("PASS",f"Embedding dimension: {dim}"),("PASS",f"Embedding test latency: {latency:.1f} ms")]
-        except Exception as exc: return [("BLOCKED",f"Embedding health check failed ({type(exc).__name__)})")]
+        except Exception as exc: return [("BLOCKED",f"Embedding health check failed ({type(exc).__name__})")]
 
     def _codebase_checks(self, entries: list[dict[str, Any]]):
         try: mcp=self.compatibility.active_mcp_readiness()
