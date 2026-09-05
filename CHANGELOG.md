@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+
+- Fixed the production canary so Codebase Memory reports PASS only when both the routable `codebase-memory` skill and the active profile's `codebase-memory` MCP are ready.
+- Added a regression for the case where the routing skill is present but its required MCP is missing or not ready.
+- Canary now reports WARN and skips Codebase-Memory follow-up continuity checks whenever full Codebase Memory readiness is unavailable.
+- Kept routing behavior, policy, embeddings, shadow learning, enforcement, and the default `openviking_enabled: false` unchanged.
+
 ## 0.7.0
 
 - Added a bundled `codebase-memory` Hermes skill that declares `requirements.mcps: [codebase-memory]`, keeping MCP servers as capabilities rather than direct routing targets.
