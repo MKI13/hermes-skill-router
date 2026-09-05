@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Inspect routing plans, readiness, diagnostics, performance, and execution audits.
-version: 0.7.1
+version: 0.8.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -19,7 +19,7 @@ Use this skill when the user asks to:
 
 - inspect which installed skills should handle a task;
 - diagnose wrong, missing, stale, or unnecessary Primary/Supporting Skill recommendations;
-- run Router health or performance checks;
+- run Router health, canary, or performance checks;
 - refresh or inspect the profile-local routing plan;
 - inspect readiness, audit, quality, enforcement, or shadow-learning state;
 - discover Hermes profiles or apply the Router's explicit profile setup workflow.
@@ -33,6 +33,7 @@ Inside Hermes:
 ```text
 /skill-router status
 /skill-router doctor
+/skill-router canary
 /skill-router performance
 /skill-router events 20
 /skill-router refresh
@@ -45,7 +46,7 @@ Inside Hermes:
 /skill-router recommend <task>
 ```
 
-Terminal equivalents use `hermes skill-router ...`. Profile discovery and setup remain terminal-oriented through `profiles`, `profiles --sync`, `setup`, and explicit `setup --apply`.
+Terminal equivalents use `hermes skill-router ...`. Profile discovery and setup remain terminal-oriented through `profiles`, `profiles --sync`, `setup`, `setup --dry-run`, `setup --apply`, and `setup --sync`.
 
 ## Routing Rules
 
@@ -55,13 +56,19 @@ Routing modes live under `plugins.entries.skill-router.settings.routing_mode`:
 - `hybrid` or `embedding`: deterministic explicit-request handling plus direct local Ollama embeddings with deterministic fail-open;
 - `model`: auxiliary-model selection with deterministic fallback.
 
+v0.8.0 adds conservative intent aliases for known mail/calendar skill families. These aliases apply only when the installed skill identity clearly belongs to that family; generic prose such as “write a message” must still be allowed to produce no skill match.
+
 All routes pass through the deterministic policy gate. The policy remains authoritative for readiness, dependency expansion, alternatives, role normalization, ordering, and the skill limit.
 
 The Router never routes an MCP server directly. An MCP-backed workflow must be represented by a Hermes skill that declares `requirements.mcps`. The bundled `codebase-memory` skill is the reference integration for the `codebase-memory` MCP identity.
 
+## Readiness
+
+v0.8.0 makes automatic ranking more readiness-aware. `ready` and `unknown` remain usable, while `setup_required` and especially `dependency_missing` are strongly penalized. `broken` and `disabled` must never win automatic routing because of lexical noise. Explicit user requests still pass through the policy gate and retain the existing explicit-request behavior.
+
 ## Follow-up Continuity
 
-v0.7.1 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
+v0.8.0 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
 
 Continuity is deliberately weak. It is used only when normal routing abstains and never overrides:
 
@@ -83,7 +90,7 @@ The existing safety boundary remains mandatory: numeric loopback HTTP origin onl
 
 The bundled `codebase-memory` skill should be used for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. Its readiness depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
-In v0.7.1 the production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
+The production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
 
 ## Doctor
 
@@ -97,7 +104,7 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 
 ## Shadow Learning
 
-`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.7.1.
+`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.8.0.
 
 ## Procedure
 
@@ -106,7 +113,7 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 3. Treat the Primary Skill as the controlling workflow.
 4. Apply Supporting Skills only where compatible and useful.
 5. Respect setup/readiness warnings before depending on a skill.
-6. If routing looks wrong, use `doctor`, `recommend`, `inspect`, `audit last`, and `performance` to isolate the problem.
+6. If routing looks wrong, use `doctor`, `canary`, `recommend`, `inspect`, `audit last`, and `performance` to isolate the problem.
 7. Use `refresh` after manual skill changes not reflected by Hermes lifecycle events.
 
 ## Pitfalls
@@ -116,4 +123,4 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 - Never route directly to MCP tools.
 - Never substitute raw model output for a blocked policy result.
 - Never treat audit, quality, shadow learning, or performance metrics as proof that Hermes' final domain answer is correct.
-- OpenViking remains optional and disabled by default in the recommended v0.7.1 rollout.
+- OpenViking remains optional and disabled by default in the recommended v0.8.0 rollout.
