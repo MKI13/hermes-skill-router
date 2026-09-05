@@ -12,6 +12,7 @@
     {"id":"no_skill_list","category":"no_skill","task":"List three colors.","expected":[]},
     {"id":"no_skill_summary","category":"no_skill","task":"Summarize this short sentence.","expected":[]},
     {"id":"no_skill_message_generic","category":"no_skill","task":"Write a short message.","expected":[]},
+    {"id":"no_skill_customer_generic","category":"no_skill","task":"Erstelle ein Angebot für den Kunden.","expected":[]},
 
     {"id":"single_pdf_create","category":"single","task":"Create a PDF document.","expected":[{"name":"pdf","role":"primary"}]},
     {"id":"single_pdf_merge","category":"single","task":"Merge two PDF files.","expected":[{"name":"pdf","role":"primary"}]},
