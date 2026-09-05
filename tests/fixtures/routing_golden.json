@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "cases": [
     {"id":"no_skill_arithmetic","category":"no_skill","task":"17 + 25","expected":[]},
     {"id":"no_skill_greeting","category":"no_skill","task":"Hello","expected":[]},
@@ -11,6 +11,7 @@
     {"id":"no_skill_translation","category":"no_skill","task":"Translate yes to German.","expected":[]},
     {"id":"no_skill_list","category":"no_skill","task":"List three colors.","expected":[]},
     {"id":"no_skill_summary","category":"no_skill","task":"Summarize this short sentence.","expected":[]},
+    {"id":"no_skill_message_generic","category":"no_skill","task":"Write a short message.","expected":[]},
 
     {"id":"single_pdf_create","category":"single","task":"Create a PDF document.","expected":[{"name":"pdf","role":"primary"}]},
     {"id":"single_pdf_merge","category":"single","task":"Merge two PDF files.","expected":[{"name":"pdf","role":"primary"}]},
@@ -22,6 +23,10 @@
     {"id":"single_humanizer_explicit","category":"single","task":"Use humanizer to rewrite this prose.","expected":[{"name":"humanizer","role":"primary"}]},
     {"id":"single_authoring_explicit","category":"single","task":"Use hermes-skill-authoring to document a skill.","expected":[{"name":"hermes-skill-authoring","role":"primary"}]},
     {"id":"single_design","category":"single","task":"Document a visual design system with design-md.","expected":[{"name":"design-md","role":"primary"}]},
+    {"id":"single_mail_de","category":"single","task":"Schreibe eine freundliche E-Mail an einen Kunden.","expected":[{"name":"himalaya","role":"primary"}]},
+    {"id":"single_mail_reply_de","category":"single","task":"Antworte auf die Kundenmail.","expected":[{"name":"himalaya","role":"primary"}]},
+    {"id":"single_calendar_de","category":"single","task":"Erstelle einen Termin im Kalender für morgen.","expected":[{"name":"google-calendar","role":"primary"}]},
+    {"id":"single_calendar_en","category":"single","task":"Schedule a calendar appointment tomorrow.","expected":[{"name":"google-calendar","role":"primary"}]},
 
     {"id":"support_github_explicit","category":"supporting","task":"Use github-pr-workflow with github-code-review.","expected":[{"name":"github-pr-workflow","role":"primary"},{"name":"github-code-review","role":"supporting"}]},
     {"id":"support_design_explicit","category":"supporting","task":"Use design-md with architecture-diagram.","expected":[{"name":"design-md","role":"primary"},{"name":"architecture-diagram","role":"supporting"}]},
