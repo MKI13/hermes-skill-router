@@ -71,6 +71,16 @@ GOLDEN_CATALOG = [
     ),
     _entry("humanizer", "Rewrite prose in natural human language.", ["rewrite", "prose", "natural", "sentence"]),
     _entry(
+        "himalaya",
+        "Terminal mail client integration.",
+        ["himalaya"],
+    ),
+    _entry(
+        "google-calendar",
+        "Calendar integration for events and appointments.",
+        ["google"],
+    ),
+    _entry(
         "deployment-workflow",
         "Deploy an application with verified release steps.",
         ["deploy", "application", "release", "workflow"],
