@@ -1,7 +1,7 @@
 ---
 name: skill-router
-description: Inspect routing plans, readiness, diagnostics, performance, and execution audits.
-version: 0.7.1
+description: Inspect routing plans, readiness, diagnostics, rollout readiness, performance, and execution audits.
+version: 0.8.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -19,7 +19,7 @@ Use this skill when the user asks to:
 
 - inspect which installed skills should handle a task;
 - diagnose wrong, missing, stale, or unnecessary Primary/Supporting Skill recommendations;
-- run Router health or performance checks;
+- run Router health, rollout-preflight, or performance checks;
 - refresh or inspect the profile-local routing plan;
 - inspect readiness, audit, quality, enforcement, or shadow-learning state;
 - discover Hermes profiles or apply the Router's explicit profile setup workflow.
@@ -33,6 +33,8 @@ Inside Hermes:
 ```text
 /skill-router status
 /skill-router doctor
+/skill-router rollout-check
+/skill-router canary
 /skill-router performance
 /skill-router events 20
 /skill-router refresh
@@ -61,7 +63,7 @@ The Router never routes an MCP server directly. An MCP-backed workflow must be r
 
 ## Follow-up Continuity
 
-v0.7.1 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
+v0.8.0 keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
 
 Continuity is deliberately weak. It is used only when normal routing abstains and never overrides:
 
@@ -83,7 +85,19 @@ The existing safety boundary remains mandatory: numeric loopback HTTP origin onl
 
 The bundled `codebase-memory` skill should be used for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. Its readiness depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
-In v0.7.1 the production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
+The production canary only reports Codebase Memory as ready when both the routing skill and the active profile's `codebase-memory` MCP are ready. If either side is unavailable, the canary reports WARN and skips the Codebase-Memory follow-up continuity checks.
+
+## Rollout Check
+
+`/skill-router rollout-check` and `hermes skill-router rollout-check` are read-only preflight checks for the active profile. They do not install, enable, start, stop, restart, or modify anything.
+
+The result is one of:
+
+- `READY`: conservative rollout defaults and required health checks are satisfied;
+- `REVIEW`: no hard blocker exists, but one or more settings or optional dependencies require explicit review;
+- `BLOCKED`: a critical capability, catalog state, routing mode, or required embedding health check prevents rollout.
+
+The conservative target is deterministic or hybrid routing, `enforcement_mode: warn`, `learning_mode: shadow`, follow-up context enabled, and OpenViking paused. Codebase Memory readiness is reported separately so an absent profile MCP cannot be mistaken for a fully ready code workflow.
 
 ## Doctor
 
@@ -97,7 +111,7 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 
 ## Shadow Learning
 
-`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.7.1.
+`learning_mode: shadow` remains diagnostic-only. It cannot change real routing, policy, readiness, OpenViking evidence, or enforcement. There is no active-learning mode in v0.8.0.
 
 ## Procedure
 
@@ -106,8 +120,9 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 3. Treat the Primary Skill as the controlling workflow.
 4. Apply Supporting Skills only where compatible and useful.
 5. Respect setup/readiness warnings before depending on a skill.
-6. If routing looks wrong, use `doctor`, `recommend`, `inspect`, `audit last`, and `performance` to isolate the problem.
-7. Use `refresh` after manual skill changes not reflected by Hermes lifecycle events.
+6. Before a profile rollout, run `rollout-check`, then `doctor`, then the read-only `canary`.
+7. If routing looks wrong, use `recommend`, `inspect`, `audit last`, and `performance` to isolate the problem.
+8. Use `refresh` after manual skill changes not reflected by Hermes lifecycle events.
 
 ## Pitfalls
 
@@ -116,4 +131,5 @@ Doctor must never print credentials, environment values, hidden paths, prompts, 
 - Never route directly to MCP tools.
 - Never substitute raw model output for a blocked policy result.
 - Never treat audit, quality, shadow learning, or performance metrics as proof that Hermes' final domain answer is correct.
-- OpenViking remains optional and disabled by default in the recommended v0.7.1 rollout.
+- A `READY` rollout check is permission to proceed with controlled testing, not permission to mutate other profiles automatically.
+- OpenViking remains optional and disabled by default in the recommended v0.8.0 rollout.
