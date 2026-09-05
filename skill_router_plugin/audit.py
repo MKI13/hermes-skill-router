@@ -8,6 +8,7 @@ import threading
 from typing import Any
 
 from .profile_identity import ProfileIdentity, legacy_audit_matches_profile
+from .telemetry import telemetry_for_recommendations, telemetry_lines, telemetry_summary_text
 from .quality import (
     normalize_quality,
     quality_last,
@@ -52,6 +53,7 @@ class SkillExecutionAudit:
         actual_primary: str = "",
         shadow_primary: str = "",
         shadow_changed: bool = False,
+        telemetry: dict[str, Any] | None = None,
     ) -> None:
         """Append one bounded decision without retaining the full user prompt."""
         try:
@@ -84,6 +86,7 @@ class SkillExecutionAudit:
                 "actual_primary": _safe_name(actual_primary),
                 "shadow_primary": _safe_name(shadow_primary),
                 "shadow_changed": bool(shadow_changed) and bool(_safe_name(shadow_primary)),
+                "routing_telemetry": telemetry_for_recommendations(telemetry, compact_recommendations),
             }
             if not compact_recommendations:
                 entry["result"] = "not_applicable"
@@ -315,6 +318,8 @@ class SkillExecutionAudit:
             "",
             "Primary skill loaded:",
             f"{primary_loaded} / {len(assessable)} assessable tasks",
+            "",
+            telemetry_summary_text(entries),
         ])
 
     def history(self) -> list[dict[str, Any]]:
@@ -325,14 +330,22 @@ class SkillExecutionAudit:
         except Exception:
             return []
 
+    def telemetry_summary_text(self, limit: int = 20) -> str:
+        """Expose observational metadata without changing shadow learning weights."""
+        return telemetry_summary_text(self._recent_entries(limit))
+
     def quality_summary_text(self, limit: int = 20) -> str:
-        """Render aggregate routing-quality statistics from bounded audit state."""
-        return quality_summary(self._recent_entries(limit), limit)
+        """Render quality and observational telemetry over the same bounded window."""
+        entries = self._recent_entries(limit)
+        return quality_summary(entries, limit) + "\n\n" + telemetry_summary_text(entries)
 
     def quality_last_text(self) -> str:
         """Render the latest persisted routing-quality record."""
         entries = self._recent_entries(1)
-        return quality_last(entries[-1] if entries else None)
+        text = quality_last(entries[-1] if entries else None)
+        if entries:
+            text += "\n\n" + "\n".join(telemetry_lines(entries[-1].get("routing_telemetry")))
+        return text
 
     def quality_status_fields(self) -> tuple[int, str]:
         """Return persisted quality count and the latest concise grade."""
@@ -377,6 +390,7 @@ class SkillExecutionAudit:
             f"Policy: {entry.get('policy_status', 'unknown')}",
             f"Enforcement: {entry.get('enforcement_mode', 'off')}",
             f"Guard: {entry.get('enforcement_status', 'not_required')}",
+            *telemetry_lines(entry.get("routing_telemetry")),
             "",
             "Recommended:",
         ]
@@ -593,6 +607,7 @@ def _normalize_entry(value: dict[str, Any]) -> dict[str, Any] | None:
         "shadow_primary": _safe_name(value.get("shadow_primary")),
         "shadow_changed": bool(value.get("shadow_changed"))
         and bool(_safe_name(value.get("shadow_primary"))),
+        "routing_telemetry": telemetry_for_recommendations(value.get("routing_telemetry"), recommended),
     }
     return normalized
 

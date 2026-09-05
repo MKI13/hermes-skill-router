@@ -6,6 +6,7 @@ from typing import Any
 
 from .catalog import is_negated_name, is_quoted_name, score_entry
 from .confidence import ConfidenceCandidate, choose_primary
+from .telemetry import policy_telemetry, routing_telemetry
 from .readiness import (
     BROKEN,
     DEPENDENCY_MISSING,
@@ -55,22 +56,32 @@ def apply_routing_policy(
     max_skills: int,
     explicit_skill_names: list[str],
 ) -> dict[str, Any]:
-    """Validate a model plan against catalog readiness and declared dependencies."""
+    """Validate a model plan and attach content-free decision metadata."""
+    decision_metadata: dict[str, Any] = {}
     try:
-        return _apply_policy(
+        result = _apply_policy(
             task=task,
             selected_skills=selected_skills,
             catalog_entries=catalog_entries,
             max_skills=max_skills,
             explicit_skill_names=explicit_skill_names,
+            decision_metadata=decision_metadata,
         )
     except Exception:
-        return {
+        result = {
             "selections": [],
             "warnings": ["policy-error"],
             "policy_status": "degraded",
             "changes": ["Policy validation failed; no skill recommendation was retained."],
         }
+    try:
+        result["telemetry"] = policy_telemetry(
+            selected_skills, result, catalog_entries, explicit_skill_names, decision_metadata
+        )
+    except Exception:
+        # Observability must never change a successfully validated routing plan.
+        result["telemetry"] = routing_telemetry()
+    return result
 
 
 def _apply_policy(
@@ -80,6 +91,7 @@ def _apply_policy(
     catalog_entries: list[dict[str, Any]],
     max_skills: int,
     explicit_skill_names: list[str],
+    decision_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     safe_limit = max(1, min(int(max_skills), 5))
     catalog = {
@@ -269,6 +281,11 @@ def _apply_policy(
             ready_fallback_margin=5.0,
             high_confidence_margin=10.0,
         )
+        decision_metadata.update({
+            "primary": decision.primary,
+            "confidence": decision.confidence,
+            "fallback_applied": decision.fallback_applied,
+        })
         decided = next(
             (item for item in valid_candidates if item["name"] == decision.primary),
             None,
