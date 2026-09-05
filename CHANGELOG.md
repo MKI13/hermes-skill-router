@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- Added a read-only `skill-router rollout-check` preflight with `READY`, `REVIEW`, and `BLOCKED` decisions before profile rollout.
+- The preflight validates critical Hermes capabilities, catalog/hash availability, conservative routing/enforcement/learning settings, follow-up context, local embedding health when required, Codebase Memory MCP/skill state, and paused OpenViking state.
+- `rollout-check` never installs, enables, starts, stops, restarts, or modifies profiles, skills, MCPs, gateways, or files.
+- Added focused regression coverage for ready, review, blocked, and non-conservative rollout configurations.
+- Kept runtime routing behavior, policy, Codebase Memory integration, shadow learning, and the default `openviking_enabled: false` unchanged.
+
 ## 0.7.1
 
 - Fixed the production canary so Codebase Memory reports PASS only when both the routable `codebase-memory` skill and the active profile's `codebase-memory` MCP are ready.
