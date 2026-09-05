@@ -27,6 +27,9 @@ class Ctx:
 
 
 class Embedding:
+    def rank(self, task, entries, *, catalog_hash):
+        return {}
+
     def cache_status(self):
         return {"entries": 1, "model": "local-test", "dimensions": 4}
 
