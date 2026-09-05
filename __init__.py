@@ -69,9 +69,9 @@ def register(ctx) -> None:
     ctx.register_command(
         name="skill-router",
         handler=runtime.command,
-        description="Inspect, diagnose, benchmark, refresh, or test the profile skill routing plan.",
+        description="Inspect, diagnose, benchmark, canary-test, refresh, or test the profile skill routing plan.",
         args_hint=(
-            "[status|doctor|performance|events [N]|refresh|plan|inspect <skill>|audit [last|N]|"
+            "[status|doctor|canary|performance|events [N]|refresh|plan|inspect <skill>|audit [last|N]|"
             "quality [last|N]|learning [last|reset|rebuild|<skill>]|enforcement|recommend <task>]"
         ),
     )
@@ -80,6 +80,7 @@ def register(ctx) -> None:
         commands = parser.add_subparsers(dest="skill_router_action")
         commands.add_parser("status", help="Show routing-plan status")
         commands.add_parser("doctor", help="Run safe end-to-end Router diagnostics")
+        commands.add_parser("canary", help="Run a read-only active-profile production canary")
         commands.add_parser("performance", help="Show bounded local routing latency metrics")
         events = commands.add_parser("events", help="Show recent skill catalog changes")
         events.add_argument("limit", nargs="?", type=int, default=20)
@@ -113,6 +114,10 @@ def register(ctx) -> None:
             return 0
         if action == "doctor":
             text = enhancements.doctor_text()
+            print(text)
+            return 2 if "Overall: BLOCKED" in text else 1 if "Overall: WARN" in text else 0
+        if action == "canary":
+            text = enhancements.canary_text()
             print(text)
             return 2 if "Overall: BLOCKED" in text else 1 if "Overall: WARN" in text else 0
         if action == "performance":
@@ -181,7 +186,7 @@ def register(ctx) -> None:
             return 0
         print(
             "Usage: hermes skill-router "
-            "{status|doctor|performance|events|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}"
+            "{status|doctor|canary|performance|events|profiles|setup|refresh|plan|inspect|audit|quality|learning|enforcement|recommend}"
         )
         return 2
 
