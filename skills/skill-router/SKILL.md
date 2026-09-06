@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Inspect routing plans, readiness, diagnostics, rollout readiness, performance, and execution audits.
-version: 0.11.0
+version: 0.12.0
 author: Hermes Skill Router contributors
 license: MIT
 metadata:
@@ -13,7 +13,7 @@ metadata:
 
 This operational skill explains how to inspect and diagnose the always-on Hermes Skill Router plugin. It does not replace task-specific skills.
 
-This branch is development version v0.11.0, unreleased. Repository CI is not a live-profile validation or permission to deploy.
+This branch is development version v0.12.0, unreleased. Repository CI is not a live-profile validation or permission to deploy.
 
 ## When to Use
 
@@ -79,13 +79,15 @@ Numeric loopback HTTP origin only, no proxy, no redirects, bounded response size
 
 Use the bundled skill for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. It depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
-The canary requires an available routing skill and a configured/enabled MCP before its Codebase-Memory checks report PASS. An unavailable side yields WARN and skipped continuity checks. Passive MCP discovery is not a real search or end-to-end MCP execution test.
+The canary requires an explicitly ready routing skill with consistent setup/policy metadata and a configured/enabled MCP before its Codebase-Memory checks report PASS. An unavailable side yields WARN and skipped continuity checks. Passive MCP discovery is not a real search or end-to-end MCP execution test.
 
 ## Diagnostics and Rollout Check
 
 `rollout-check` returns `READY`, `REVIEW`, or `BLOCKED`; `doctor` and `canary` return `PASS`, `WARN`, or `BLOCKED`. They diagnose the active profile, not other profiles.
 
 Doctor adds a bounded readiness summary. `inspect <skill>` groups missing dependencies, unknown dependencies, setup requirements, and a routing recommendation. Configuration diagnostics name keys rather than exposing their values.
+
+Readiness 2.0 evidence is preserved across catalog, cached model metadata and stored plans. Old snapshots are refreshed from actual passive checks at the next allowed scan; they are not silently declared ready. The numeric summary includes only known counters. Setup key strings and legacy type/name records are both supported. If quota compaction removes diagnostic details, `readiness_details_omitted` explicitly distinguishes missing evidence from no declared requirements. Readiness format version 2 is independent of plugin v0.12.0.
 
 These checks do not install, enable, start, stop, restart, or reconfigure skills, MCPs, profiles, or gateways. However, catalog discovery can refresh Router-owned caches/state. Hybrid/embedding health checks can contact the configured numeric loopback endpoint. Do not claim these commands guarantee zero file writes or zero network requests.
 

@@ -7,7 +7,7 @@ import math
 import re
 from typing import Any, Callable
 
-from .catalog import base_plan_entry, compact_entry, rank_entries, score_entry
+from .catalog import base_plan_entry, compact_entry, rank_entries, readiness_metadata, score_entry
 from .policy import detect_explicit_skill_names
 
 
@@ -93,11 +93,13 @@ def analyze_changed_skills(
         for entry in previous_entries
         if isinstance(entry, dict) and entry.get("name")
     }
-    current_names = {record["name"] for record in records}
+    current_records = {record["name"]: record for record in records}
+    # Passive evidence changes independently of SKILL.md and model metadata.
+    # Always refresh it, even when no auxiliary-model analysis is necessary.
     output = {
-        name: entry
+        name: {**entry, **readiness_metadata(current_records[name])}
         for name, entry in previous.items()
-        if name in current_names
+        if name in current_records
     }
     changed = [
         record for record in records

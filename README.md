@@ -2,7 +2,7 @@
 
 An always-on, profile-scoped skill planner for Hermes Agent with deterministic routing, optional local Ollama embeddings, conservative follow-up continuity, readiness checks, execution audit/quality, and optional OpenViking support.
 
-> **Development version v0.11.0 — unreleased.** The changes on this branch have not yet been validated in the intended isolated Hermes profile with its local model. A successful CI run is not production approval. OpenViking remains **disabled by default**.
+> **Development version v0.12.0 — unreleased.** Based on the merged v0.11.0 repository state. The new readiness-pipeline changes have not yet been validated in the intended isolated Hermes profile with its local model. A successful CI run is not production approval. OpenViking remains **disabled by default**.
 
 ## Architecture
 
@@ -25,7 +25,13 @@ The repository bundles the native `skill-router` plugin, the operational `skill-
 
 ## Current development scope
 
-This branch combines rollout preflight, Readiness 2.0, confidence-aware policy selection, and Routing Decision Telemetry 2.0. These are development milestones, not separate production release claims.
+v0.12.0 fixes the Readiness 2.0 data path on top of the existing rollout preflight, confidence-aware policy and decision telemetry. It does not rebuild those components or change selection limits, routing scores, learning weights, scan intervals, or profile configuration.
+
+A shared passive-evidence projection preserves `readiness_version`, `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, and `readiness_summary` alongside existing readiness fields in new plans, cached model analysis and persisted snapshots. An older snapshot with the same catalog hash is repaired from actual checks during the next permitted scan, not by assuming readiness or invoking a new model analysis. Normal compaction retains this evidence; deeper quota compaction marks `readiness_details_omitted` instead of silently presenting missing details as no requirements.
+
+`inspect` and Doctor accept setup key names as well as legacy type/name records. Structured summaries render only the known numeric counters, not arbitrary dictionary fields. Repository integration fixtures cover scanning, persistence/reload, readiness-only changes, updates/removal, model-enrichment boundaries and compaction. Live quality, reliability and token outcomes remain unmeasured.
+
+The quality-first roadmap and native-versus-router evaluation protocol are recorded in [the development plan](docs/quality-first-plan.md). New work branches include their target version; merged history is retained and current package, runtime, skills and documentation versions stay synchronized.
 
 Readiness reports distinguish missing commands, Python modules, other skills, MCP definitions, and required configuration keys. `inspect` groups missing dependencies, unverified dependencies, setup requirements, and the Router action. Doctor adds a bounded readiness summary rather than dumping the entire catalog.
 
@@ -45,7 +51,7 @@ Capabilities are detected rather than inferred from a version string. CI runs th
 
 ## Installation and profile boundaries
 
-A default-branch install does not select this development branch:
+An install without `--ref` selects the repository's current default branch, not a particular reviewed development snapshot:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
@@ -135,7 +141,7 @@ Doctor reports `PASS`, `WARN`, or `BLOCKED`, with a readiness summary listing at
 SKIP    OpenViking disabled by configuration
 ```
 
-The Codebase Memory canary requires an available routing skill and a configured/enabled MCP. Missing MCP readiness yields WARN and skips the corresponding continuity checks. Passive MCP discovery is not a live RPC, search, or end-to-end execution test.
+The Codebase Memory canary requires an explicitly ready routing skill with consistent setup/policy metadata and a configured/enabled MCP. Missing MCP readiness yields WARN and skips the corresponding continuity checks. Passive MCP discovery is not a live RPC, search, or end-to-end execution test.
 
 ### Performance
 
@@ -174,7 +180,7 @@ requirements:
   config: [GITHUB_TOKEN]
 ```
 
-States are `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, and `disabled`. Missing declarations do not imply readiness. Readiness 2.0 adds `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary`, and checks with `available | missing | unknown`; configuration diagnostics name required keys, not their values.
+States are `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, and `disabled`. Missing declarations do not imply readiness. Readiness 2.0 adds `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary`, and checks with `available | missing | unknown`; configuration diagnostics name required keys, not their values. `readiness_version: 2` identifies the evidence format, independently of plugin version v0.12.0.
 
 The policy validates installed names, readiness, declared dependencies, alternatives, roles, ordering, and limits. Explicit requests do not re-enable broken or disabled skills or waive unusable skill dependencies. A setup warning is not permission to install anything automatically.
 
@@ -263,7 +269,7 @@ hermes plugins doctor . --ci
 
 Tests cover policy/audit integration, the production wrapper, finalization and reloads, profile/session separation, bounded history, malformed telemetry, secret-free reason codes, and unchanged quality/learning behavior. Version synchronization includes `pyproject.toml`, `plugin.yaml`, both bundled skills, package/runtime version, and current documentation markers.
 
-GitHub CI runs Python 3.11/3.12/3.13, benchmarks, documentation synchronization, compilation, two pinned Hermes plugin scans, and an informative current-main scan. Live isolated-profile testing with the intended local model, Codebase Memory, and embedding service is still a separate acceptance gate before merging or releasing.
+GitHub CI runs Python 3.11/3.12/3.13, benchmarks, documentation synchronization, compilation, two pinned Hermes plugin scans, and an informative current-main scan. Repository integration is separate from release and production approval. Live isolated-profile testing with the intended local model, Codebase Memory, and embedding service remains required before production rollout; no live result is claimed here.
 
 ## License
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Mapping
 
+from .inspection import format_readiness_summary, readiness_items
 from .readiness import BROKEN, DEPENDENCY_MISSING, DISABLED, READY, SETUP_REQUIRED, UNKNOWN
 
 _ORDER = (BROKEN, DEPENDENCY_MISSING, SETUP_REQUIRED, UNKNOWN, DISABLED, READY)
@@ -70,36 +71,37 @@ def _priority(entry: Mapping[str, Any]) -> tuple[int, str]:
 
 
 def _detail(entry: Mapping[str, Any]) -> str:
-    summary = _safe(entry.get("readiness_summary") or "", 240)
-    if summary != "unknown":
-        return summary
+    if entry.get("readiness_details_omitted") is True:
+        return "readiness details omitted by state quota; refresh and inspect for current evidence"
+    summary = format_readiness_summary(entry.get("readiness_summary"))
+    # Preserve old textual summaries while rendering v2 counters by allowlist.
+    if isinstance(entry.get("readiness_summary"), str) and summary:
+        return _safe(summary, 240)
 
     missing = _items(entry.get("missing_dependencies"))
-    setup = _items(entry.get("setup_requirements"))
+    setup = _items(entry.get("setup_requirements"), setup_keys=True)
     unknown = _items(entry.get("unknown_dependencies"))
     parts: list[str] = []
+    if summary:
+        parts.append(summary)
     if missing:
         parts.append("missing " + ", ".join(missing[:3]))
     if setup:
         parts.append("setup " + ", ".join(setup[:3]))
     if unknown:
         parts.append("unverified " + ", ".join(unknown[:3]))
-    return "; ".join(parts) or "inspect for cached readiness evidence"
+    return _safe("; ".join(parts), 240) if parts else "inspect for cached readiness evidence"
 
 
-def _items(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    output: list[str] = []
-    for item in value[:10]:
-        if not isinstance(item, Mapping):
-            continue
-        kind = _safe(item.get("type") or "dependency", 40).replace("_", " ")
-        name = _safe(item.get("name") or "unknown", 120)
-        output.append(f"{kind}:{name}")
-    return output
+def _items(value: Any, *, setup_keys: bool = False) -> list[str]:
+    return [
+        f"{_safe(item['type'], 40)}:{_safe(item['name'], 120)}"
+        for item in readiness_items(value, setup_keys=setup_keys)[:10]
+    ]
 
 
 def _safe(value: Any, limit: int = 160) -> str:
-    text = str(value or "").replace("\n", " ").replace("\r", " ").strip()
+    if not isinstance(value, str):
+        return "unknown"
+    text = " ".join(value.split()).strip()
     return text[:limit] or "unknown"
