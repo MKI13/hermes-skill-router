@@ -97,7 +97,7 @@ def test_setup_required_is_displaced_when_ready_candidate_exists():
     assert result["policy_status"] == "adjusted"
 
 
-def test_setup_required_is_retained_when_ready_candidate_is_not_usable():
+def test_setup_required_is_blocked_when_no_candidate_is_usable():
     result = policy(
         [selected("setup", "primary"), selected("ready")],
         [
@@ -106,8 +106,11 @@ def test_setup_required_is_retained_when_ready_candidate_is_not_usable():
         ],
     )
 
-    assert names(result) == ["setup"]
-    assert result["policy_status"] == "degraded"
+    # Stricter execution contract: an unavailable alternative is not permission
+    # to run a setup-only workflow. Diagnosis is provided by inspect instead.
+    assert names(result) == []
+    assert result["policy_status"] == "blocked"
+    assert "setup-required:setup" in result["warnings"]
 
 
 def test_dependency_missing_is_not_an_automatic_primary():
@@ -149,27 +152,29 @@ def test_explicit_skill_becomes_primary_over_model_primary():
     assert roles(result) == ["primary", "supporting"]
 
 
-def test_explicit_setup_required_skill_remains_visible():
+def test_explicit_setup_required_skill_is_diagnosed_not_executable():
     result = policy(
         [selected("setup", "primary")],
         [entry("setup", "setup_required")],
         explicit=["setup"],
     )
 
-    assert names(result) == ["setup"]
-    assert result["policy_status"] == "degraded"
+    assert names(result) == []
+    assert result["policy_status"] == "blocked"
     assert "setup-required:setup" in result["warnings"]
+    assert any("inspect" in change for change in result["changes"])
 
 
-def test_explicit_dependency_missing_skill_is_degraded():
+def test_explicit_dependency_missing_skill_is_blocked():
     result = policy(
         [selected("missing", "primary")],
         [entry("missing", "dependency_missing")],
         explicit=["missing"],
     )
 
-    assert names(result) == ["missing"]
-    assert result["policy_status"] == "degraded"
+    assert names(result) == []
+    assert result["policy_status"] == "blocked"
+    assert "dependency-missing:missing" in result["warnings"]
 
 
 def test_explicit_disabled_skill_is_blocked_not_reenabled():

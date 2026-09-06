@@ -22,7 +22,20 @@ from .readiness import (
 _LEGACY_ROUTER_SKILLS = {"skill-router"}
 _WORD_RE = re.compile(r"[^\W_]{2,}", re.UNICODE)
 _NEGATION_RE = re.compile(
-    r"\b(?:avoid|do\s+not|don't|dont|exclude|kein(?:e[nrms]?)?|nicht|not|ohne|skip|vermeide|without)\b",
+    r"\b(?:avoid|do\s+not|don't|dont|exclude|kein(?:e[nrms]?)?|nicht|not|never|nie|niemals|ohne|skip|vermeide|without)\b",
+    re.IGNORECASE,
+)
+_NEGATION_BOUNDARY_RE = re.compile(
+    r"[.;!?\n]|\b(?:aber|but|however|sondern|stattdessen|instead)\b|"
+    r"(?:,\s*|\b(?:und|and)\s+)(?=(?:nutze|benutze|verwende|nimm|use|using)\b)",
+    re.IGNORECASE,
+)
+_NOT_ONLY_RE = re.compile(r"^\s+(?:nur|bloß|bloss|allein|only|just)\b", re.IGNORECASE)
+# Bind German postfix exclusions to the immediately preceding skill, not a
+# different skill in a following clause. This is bounded syntax, not an NLP model.
+_POSTFIX_NEGATION_RE = re.compile(
+    r"^(?:-skill)?[ \t]+(?:(?:dafür|dafuer|dazu|dabei|hier|jetzt|heute|diesmal|bitte|lieber|doch)[ \t]+){0,5}"
+    r"(?:nicht(?![ \t]+(?:nur|bloß|bloss|allein)\b)|nie|niemals|auf[ \t]+keinen[ \t]+fall)\b",
     re.IGNORECASE,
 )
 _READINESS_SCORE_ADJUSTMENT = {
@@ -249,38 +262,51 @@ def _contains_name(task: str, name: str) -> bool:
         start = index + 1
 
 
+def _negative_clauses(task: str) -> Iterable[str]:
+    normalized = str(task or "").casefold()
+    for negation in _NEGATION_RE.finditer(normalized):
+        tail = normalized[negation.end():]
+        if negation.group().casefold() in {"nicht", "not", "do not"} and _NOT_ONLY_RE.match(tail):
+            continue
+        yield _NEGATION_BOUNDARY_RE.split(tail, maxsplit=1)[0]
+
+
 def is_negated_name(task: str, name: str) -> bool:
-    """Return whether a standalone skill name occurs in a local negated clause."""
+    """Recognize bounded prefix and German postfix skill exclusions.
+
+    A name mention is not an instruction to use a skill when its local clause
+    excludes it. Positive contrast clauses and 'nicht nur' are not exclusions.
+    """
     if not name:
         return False
     normalized = str(task or "").casefold()
     needle = name.casefold()
-    for negation in _NEGATION_RE.finditer(normalized):
-        clause = re.split(
-            r"[.;!?]|\b(?:aber|but|however|sondern)\b",
-            normalized[negation.end():],
-            maxsplit=1,
-        )[0]
-        index = clause.find(needle)
-        if 0 <= index <= 60:
+    for clause in _negative_clauses(normalized):
+        for match in re.finditer(re.escape(needle), clause):
+            index, end = match.span()
+            if index > 60:
+                break
             before = clause[index - 1] if index else ""
-            end = index + len(needle)
             after = clause[end] if end < len(clause) else ""
             if not _name_character(before) and not _name_character(after):
                 return True
+    for match in re.finditer(re.escape(needle), normalized):
+        index, end = match.span()
+        before = normalized[index - 1] if index else ""
+        tail = normalized[end:]
+        after = tail[:1]
+        skill_suffix = re.match(r"-skill\b", tail, re.IGNORECASE)
+        if _name_character(before) or (_name_character(after) and not skill_suffix):
+            continue
+        if _POSTFIX_NEGATION_RE.match(tail[:100]):
+            return True
     return False
 
 
 def negated_terms(task: str) -> set[str]:
     """Return nearby terms governed by a simple English or German negation."""
-    normalized = str(task or "").casefold()
     terms: set[str] = set()
-    for negation in _NEGATION_RE.finditer(normalized):
-        clause = re.split(
-            r"[.;!?]|\b(?:aber|but|however|sondern)\b",
-            normalized[negation.end():],
-            maxsplit=1,
-        )[0]
+    for clause in _negative_clauses(task):
         words = tokenize(clause)[:5]
         terms.update(word for word in words if word not in {"bitte", "it", "please", "to", "verwenden"})
     return terms

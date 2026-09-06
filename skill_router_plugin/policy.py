@@ -19,6 +19,7 @@ from .readiness import (
 
 _POLICY_STATUSES = {"valid", "adjusted", "degraded", "blocked"}
 _USABLE_DEPENDENCY_STATUSES = {READY, UNKNOWN}
+_NON_EXECUTABLE_STATUSES = {BROKEN, DISABLED, DEPENDENCY_MISSING, SETUP_REQUIRED}
 
 
 def detect_explicit_skill_names(
@@ -99,7 +100,10 @@ def _apply_policy(
         for entry in catalog_entries
         if isinstance(entry, dict) and entry.get("name")
     }
-    explicit_order = [name for name in explicit_skill_names if name in catalog]
+    # Enforce exclusions again at the final gate, including model/embedding
+    # output and dependency expansion. Explicit hints cannot override a veto.
+    excluded = {name for name in catalog if is_negated_name(task, name)}
+    explicit_order = [name for name in explicit_skill_names if name in catalog and name not in excluded]
     explicit = set(explicit_order)
     warnings: list[str] = []
     changes: list[str] = []
@@ -113,6 +117,11 @@ def _apply_policy(
             changed = True
             continue
         name = str(item.get("name") or "")
+        if name in excluded:
+            changed = True
+            _append(warnings, f"excluded:{name}")
+            _append(changes, f"Removed explicitly excluded skill: {name}")
+            continue
         if name not in catalog or name in seen:
             changed = True
             if name and name not in catalog:
@@ -121,8 +130,8 @@ def _apply_policy(
         seen.add(name)
         candidates.append(_candidate(name, item, catalog[name], index, "selected"))
 
-    for name in explicit_skill_names:
-        if name not in catalog or name in seen:
+    for name in explicit_order:
+        if name in seen:
             continue
         seen.add(name)
         candidates.append(_candidate(name, {}, catalog[name], len(candidates), "explicit"))
@@ -133,17 +142,25 @@ def _apply_policy(
         status = "blocked" if selected_skills else "adjusted" if changed else "valid"
         return _result([], warnings, status, changes)
 
+    # Inspect/setup diagnostics remain available via Router commands. Naming an
+    # unavailable skill does not make it executable and does not authorize a
+    # silent replacement of the user's explicitly requested workflow.
     fatal_explicit = [
         item for item in candidates
-        if item["name"] in explicit and item["readiness_status"] in {BROKEN, DISABLED}
+        if item["name"] in explicit and (
+            item["readiness_status"] in _NON_EXECUTABLE_STATUSES or item["setup_needed"]
+        )
     ]
     if fatal_explicit:
         for item in fatal_explicit:
             status = item["readiness_status"]
+            if status not in _NON_EXECUTABLE_STATUSES:
+                status = SETUP_REQUIRED
             _append(warnings, f"requested-{status}:{item['name']}")
+            _append(warnings, f"{status.replace('_', '-')}:{item['name']}")
             _append(
                 changes,
-                f"Requested skill {item['name']} is {status} and was not made executable.",
+                f"Requested skill {item['name']} is {status} and was not made executable. Use inspect for diagnosis.",
             )
         return _result([], warnings, "blocked", changes)
 
@@ -166,15 +183,17 @@ def _apply_policy(
             _append(changes, f"Removed {status} skill: {name}")
             _append(warnings, f"{status}:{name}")
             continue
-        if status == DEPENDENCY_MISSING and not is_explicit:
+        if status == DEPENDENCY_MISSING:
             changed = True
             degraded = True
             _append(changes, f"Removed dependency-missing skill: {name}")
             _append(warnings, f"dependency-missing:{name}")
             continue
-        if status == DEPENDENCY_MISSING:
-            degraded = True
-            _append(warnings, f"dependency-missing:{name}")
+        if status == SETUP_REQUIRED or item["setup_needed"]:
+            changed = True
+            _append(changes, f"Removed setup-required skill: {name}")
+            _append(warnings, f"setup-required:{name}")
+            continue
         filtered.append(item)
 
     if not filtered:
@@ -184,7 +203,7 @@ def _apply_policy(
     closures: dict[str, list[str]] = {}
     cycle_detected = False
     for item in filtered:
-        closure, issues, has_cycle = _dependency_closure(item["name"], catalog)
+        closure, issues, has_cycle = _dependency_closure(item["name"], catalog, excluded)
         cycle_detected = cycle_detected or has_cycle
         for issue in issues:
             _append(warnings, issue)
@@ -210,29 +229,8 @@ def _apply_policy(
     if not valid_candidates:
         return _result([], warnings, "blocked", changes)
 
-    has_normal_candidate = any(
-        item["readiness_status"] in {READY, UNKNOWN} for item in valid_candidates
-    )
-    readiness_filtered: list[dict[str, Any]] = []
-    for item in valid_candidates:
-        if (
-            item["readiness_status"] == SETUP_REQUIRED
-            and item["name"] not in explicit
-            and has_normal_candidate
-        ):
-            changed = True
-            _append(
-                changes,
-                f"Preferred ready or unknown skill over setup-required skill: {item['name']}",
-            )
-            _append(warnings, f"setup-required:{item['name']}")
-            continue
-        if item["readiness_status"] == SETUP_REQUIRED:
-            degraded = True
-            _append(warnings, f"setup-required:{item['name']}")
-        readiness_filtered.append(item)
     valid_candidates, alternatives_changed = _remove_alternative_conflicts(
-        readiness_filtered,
+        valid_candidates,
         catalog,
         explicit,
         changes,
@@ -439,12 +437,14 @@ def _preferred_alternative(
 def _dependency_closure(
     root: str,
     catalog: dict[str, dict[str, Any]],
+    excluded: set[str] | None = None,
 ) -> tuple[list[str], list[str], bool]:
     ordered: list[str] = []
     permanent: set[str] = set()
     temporary: list[str] = []
     issues: list[str] = []
     cycle = False
+    vetoed = excluded or set()
 
     def visit(name: str) -> None:
         nonlocal cycle
@@ -462,9 +462,18 @@ def _dependency_closure(
             if entry is None:
                 _append(issues, f"missing-dependency:{name}->{dependency}")
                 continue
+            if dependency in vetoed:
+                _append(issues, f"unusable-dependency:{name}->{dependency}:excluded")
+                continue
             status = str(entry.get("readiness_status") or UNKNOWN)
             if status not in _USABLE_DEPENDENCY_STATUSES:
                 _append(issues, f"unusable-dependency:{name}->{dependency}:{status}")
+                continue
+            if entry.get("setup_needed", False) is not False:
+                _append(issues, f"unusable-dependency:{name}->{dependency}:setup_required")
+                continue
+            if entry.get("policy_metadata_complete", True) is not True:
+                _append(issues, f"unusable-dependency:{name}->{dependency}:metadata-unavailable")
                 continue
             visit(dependency)
         temporary.pop()
