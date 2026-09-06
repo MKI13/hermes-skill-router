@@ -2,7 +2,7 @@
 
 Ein dauerhaft aktiver, profilgetrennter Skill-Planer für Hermes Agent mit deterministischem Routing, optionalen lokalen Ollama-Embeddings, konservativem Folgekontext, Readiness-Prüfungen, Audit/Quality und optionaler OpenViking-Unterstützung.
 
-> **Entwicklungsstand v0.11.0 — unveröffentlicht.** Die Änderungen dieses Branches sind noch nicht im vorgesehenen isolierten Hermes-Profil mit lokalem Modell geprüft. Eine grüne CI ist keine Produktionsfreigabe. OpenViking bleibt **standardmäßig deaktiviert**.
+> **Entwicklungsstand v0.12.0 — unveröffentlicht.** Grundlage ist der bereits gemergte Repository-Stand v0.11.0. Die neuen Readiness-Datenübergaben sind noch nicht im vorgesehenen isolierten Hermes-Profil mit lokalem Modell geprüft. Eine grüne CI ist keine Produktionsfreigabe. OpenViking bleibt **standardmäßig deaktiviert**.
 
 ## Architektur
 
@@ -25,7 +25,13 @@ Enthalten sind das native `skill-router`-Plugin, der operative Skill `skill-rout
 
 ## Aktueller Entwicklungsumfang
 
-Dieser Branch verbindet Rollout-Preflight, Readiness 2.0, Confidence-basierte Policy-Auswahl und Routing Decision Telemetry 2.0. Das sind Entwicklungsmeilensteine, keine Behauptung mehrerer veröffentlichter Produktionsversionen.
+v0.12.0 korrigiert den Readiness-2.0-Datenweg auf Grundlage von Rollout-Preflight, Confidence-basierter Policy und Entscheidungstelemetrie. Diese Komponenten werden nicht neu gebaut. Auswahlgrenzen, Routing-Scores, Learning-Gewichte, Scan-Intervalle und Profilkonfiguration bleiben unverändert.
+
+Eine gemeinsame Übernahme passiver Prüfdaten erhält `readiness_version`, `missing_dependencies`, `unknown_dependencies`, `setup_requirements` und `readiness_summary` zusammen mit den bisherigen Readiness-Feldern in neuen Plänen, gespeicherten Modell-Metadaten und Snapshots. Ältere Snapshots mit unverändertem Katalog-Hash werden beim nächsten erlaubten Scan aus tatsächlichen Prüfdaten ergänzt – nicht durch angenommene Einsatzbereitschaft oder einen zusätzlichen Modellaufruf. Die erste Speicherverdichtung erhält die Prüfdaten; stärkere Verdichtung markiert `readiness_details_omitted`, statt fehlende Angaben still als nicht vorhandene Voraussetzungen darzustellen.
+
+`inspect` und Doctor verstehen Setup-Schlüsselnamen und ältere Typ-/Name-Einträge. Strukturierte Zusammenfassungen zeigen ausschließlich bekannte numerische Zähler, keine beliebigen Dictionary-Felder. Repository-Integrationstests decken Scan, Speicherung/erneutes Laden, reine Readiness-Änderungen, Aktualisierung/Entfernung, Grenzen der Modell-Anreicherung und Verdichtung ab. Auswirkungen auf echte Ergebnisqualität, Zuverlässigkeit und Tokenverbrauch sind noch nicht gemessen.
+
+Der qualitätsorientierte Arbeitsplan und das Vergleichsprotokoll für natives Hermes gegenüber Router-Betrieb stehen im [Entwicklungsplan](docs/quality-first-plan.md). Neue Arbeitsbranches enthalten ihre Zielversion; bestehende Historie bleibt erhalten. Aktuelle Paket-, Runtime-, Skill- und Dokumentationsversionen werden gemeinsam abgeglichen.
 
 Readiness unterscheidet fehlende Commands, Python-Module, andere Skills, MCP-Konfigurationen und erforderliche Konfigurationsschlüssel. `inspect` gruppiert fehlende und ungeprüfte Abhängigkeiten, Setup-Anforderungen und die Router-Empfehlung. Doctor ergänzt eine begrenzte Zusammenfassung statt einer unübersichtlichen Gesamtliste.
 
@@ -45,7 +51,7 @@ Capabilities werden erkannt, nicht aus einer Versionsnummer abgeleitet. CI führ
 
 ## Installation und Profilgrenzen
 
-Eine Installation ohne Ref verwendet den Standardbranch, nicht diesen Entwicklungsbranch:
+Eine Installation ohne `--ref` verwendet den jeweils aktuellen Standardbranch, nicht einen bestimmten geprüften Entwicklungsstand:
 
 ```bash
 hermes plugins install MKI13/hermes-skill-router --enable
@@ -135,7 +141,7 @@ Doctor liefert `PASS`, `WARN` oder `BLOCKED`. Die Readiness-Zusammenfassung nenn
 SKIP    OpenViking disabled by configuration
 ```
 
-Der Codebase-Memory-Canary verlangt einen verfügbaren Routing-Skill und einen konfigurierten/aktivierten MCP. Fehlende MCP-Readiness führt zu WARN und übersprungenen zugehörigen Kontinuitätstests. Passive MCP-Erkennung ist kein echter RPC-, Such- oder Ende-zu-Ende-Ausführungstest.
+Der Codebase-Memory-Canary verlangt einen ausdrücklich einsatzbereiten Routing-Skill mit konsistenten Setup-/Policy-Angaben und einen konfigurierten/aktivierten MCP. Fehlende MCP-Readiness führt zu WARN und übersprungenen zugehörigen Kontinuitätstests. Passive MCP-Erkennung ist kein echter RPC-, Such- oder Ende-zu-Ende-Ausführungstest.
 
 ### Performance
 
@@ -174,7 +180,7 @@ requirements:
   config: [GITHUB_TOKEN]
 ```
 
-Status: `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, `disabled`. Fehlende Deklarationen bedeuten nicht automatisch Einsatzbereitschaft. Readiness 2.0 ergänzt `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary` und Prüfzustände `available | missing | unknown`. Konfigurationsdiagnosen nennen Schlüssel, niemals deren Werte.
+Status: `ready`, `unknown`, `setup_required`, `dependency_missing`, `broken`, `disabled`. Fehlende Deklarationen bedeuten nicht automatisch Einsatzbereitschaft. Readiness 2.0 ergänzt `missing_dependencies`, `unknown_dependencies`, `setup_requirements`, `readiness_summary` und Prüfzustände `available | missing | unknown`. Konfigurationsdiagnosen nennen Schlüssel, niemals deren Werte. `readiness_version: 2` bezeichnet das Prüfdatenformat unabhängig von der Plugin-Version v0.12.0.
 
 Die Policy prüft installierte Namen, Readiness, deklarierte Abhängigkeiten, Alternativen, Rollen, Reihenfolge und Limits. Explizite Wünsche aktivieren keine defekten/deaktivierten Skills und heben unbrauchbare Skill-Abhängigkeiten nicht auf. Setup-Warnungen berechtigen nicht zur automatischen Installation.
 
@@ -263,7 +269,7 @@ hermes plugins doctor . --ci
 
 Die Tests decken Policy/Audit-Verbindung, Produktions-Wrapper, Abschluss und erneutes Laden, Profil-/Session-Trennung, begrenzte Historie, fehlerhafte Telemetrie, Freitextausschluss bei Begründungen sowie unveränderte Quality-/Learning-Bewertung ab. Der Versionsabgleich umfasst `pyproject.toml`, `plugin.yaml`, beide gebündelten Skills, Paket-/Runtime-Version und aktuelle Dokumentationsmarker.
 
-GitHub CI prüft Python 3.11/3.12/3.13, Benchmarks, Dokumentationsabgleich, Kompilierung, zwei gepinnte Hermes-Plugin-Scans und den aktuellen main-Scan informativ. Ein echter isolierter Profiltest mit dem vorgesehenen lokalen Modell, Codebase Memory und Embedding-Dienst bleibt eine getrennte Abnahmebedingung vor Merge oder Release.
+GitHub CI prüft Python 3.11/3.12/3.13, Benchmarks, Dokumentationsabgleich, Kompilierung, zwei gepinnte Hermes-Plugin-Scans und den aktuellen main-Scan informativ. Repository-Integration, Release und Produktionsfreigabe sind getrennte Schritte. Ein echter isolierter Profiltest mit dem vorgesehenen lokalen Modell, Codebase Memory und Embedding-Dienst bleibt vor produktivem Rollout erforderlich; ein solcher Test wird hier nicht als bestanden behauptet.
 
 ## Lizenz
 

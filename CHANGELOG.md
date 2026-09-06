@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0 — Unreleased
+
+- Built on the merged v0.11.0 main revision rather than restarting or overwriting its feature branches. New development branch: `feat/v0.12.0-readiness-pipeline`.
+- Preserve all passive Readiness 2.0 evidence through catalog-to-plan projection, cached model-analysis reuse, runtime snapshots, persistence/reload and normal state compaction. Nested evidence is independently copied.
+- Refresh evidence independently of skill content/model metadata. Repair older same-hash snapshots from actual passive checks at the next permitted scan without extra per-message scans or model calls; invalidate stale in-flight catalog generations when repairing evidence.
+- Accept actual setup key-name lists and legacy type/name records in inspect/Doctor. Render only known numeric summary counters, not arbitrary dictionary fields. Grouped diagnostics retain required skills and alternatives.
+- Mark readiness details omitted by severe state-quota compaction explicitly. Missing diagnostic evidence is not reported as no declared requirements, and a later fresh scan clears the omission marker.
+- Added repository regression fixtures for initial scan, four readiness states, persistence/reload, same-hash repair, changed prerequisites, skill updates/removal, model-enrichment boundaries, scan gating and compaction. The tests-only baseline reproduced 14 failing cases; those are fixture results, not live Hermes acceptance.
+- Synchronize runtime, package, manifest, bundled skills and current documentation at 0.12.0. Keep readiness and embedding format versions at 2; they are not plugin release versions.
+- Record the quality-first roadmap and native-versus-router evaluation protocol without claiming measured outcome improvements. Existing routing scores/limits, learning weights, config defaults, profile boundaries and OpenViking behavior are unchanged.
+- No GEEKOM changes, live-profile test, main merge, release or production rollout is claimed for this development milestone.
+
 ## 0.11.0 — Unreleased
 
 - Connected routing decision telemetry through Policy -> Runtime -> the existing profile-scoped Audit. The dedicated object contains only confidence, original/final primary, automatic fallback flag, and a fixed reason code.
