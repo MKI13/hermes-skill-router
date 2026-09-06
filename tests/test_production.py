@@ -74,7 +74,9 @@ def test_clear_topic_switch_is_not_followup():
 
 def test_followup_state_is_session_scoped_and_contains_no_prompt_text():
     runtime = Runtime(Ctx()); enhancement = ProductionRoutingEnhancements(runtime, Compatibility())
-    result = "[Skill Router method=deterministic policy=valid]\n1. PRIMARY: skill-router:codebase-memory [ready]\n[/Skill Router]"
+    # State consumes a structured policy result, never formatted prompt text.
+    result = {"policy_status": "valid", "selections": [
+        {"name": "skill-router:codebase-memory", "role": "primary"}]}
     key = enhancement._session_key("session-secret-id"); enhancement._save_context(key, "Analysiere das Repository.", result)
     raw = runtime.ctx.state.values["router.followup_context.v1"]
     assert "session-secret-id" not in repr(raw) and "Analysiere das Repository" not in repr(raw)

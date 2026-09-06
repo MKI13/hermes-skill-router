@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import math
 import re
+import threading
 import time
 from typing import Any, Callable
 
@@ -14,7 +15,7 @@ from . import embedding as embedding_module
 from . import runtime as runtime_module
 from .catalog import is_negated_name, score_entry
 from .policy import detect_explicit_skill_names
-from .readiness import BROKEN, DISABLED, READY
+from .readiness import BROKEN, DISABLED, READY, UNKNOWN
 from .version import VERSION
 
 EMBEDDING_DOCUMENT_VERSION = 2
@@ -29,8 +30,6 @@ _FOLLOWUP = re.compile(
     r"pruef(?:e)?\s+(?:das|es)|noch(?:\s+ein)?mal|nimm\s+die\s+(?:erste|zweite|dritte)\s+lösung|"
     r"go\s+on|continue|fix\s+it|test\s+it|check\s+it)\b", re.I)
 _SWITCH = re.compile(r"\b(?:e-?mail|mail|kunde|customer|übersetz|uebersetz|translate|wetter|weather|rechnung|invoice|angebot|quote|recherche|research|kalender|calendar|termin|meeting|bild|image|foto|photo)\b", re.I)
-_SELECTION = re.compile(r"^\s*\d+\.\s+(PRIMARY|SUPPORTING):\s+([^\[]+?)(?:\s+\[|\s*$)", re.I | re.M)
-_POLICY = re.compile(r"\bpolicy=([a-z_]+)")
 
 
 def install_production_enhancements(runtime: Any, compatibility: Any) -> "ProductionRoutingEnhancements":
@@ -66,6 +65,8 @@ class ProductionRoutingEnhancements:
         self._embed = runtime.embedding.rank
         self._followup: ContextVar[dict[str, Any] | None] = ContextVar(f"followup_{id(self)}", default=None)
         self._perf: ContextVar[dict[str, float] | None] = ContextVar(f"perf_{id(self)}", default=None)
+        self._decision: ContextVar[dict[str, Any] | None] = ContextVar(f"decision_{id(self)}", default=None)
+        self._context_lock = threading.RLock()
 
     def install(self) -> None:
         self.runtime.pre_llm_call = self.pre_llm_call
@@ -80,14 +81,20 @@ class ProductionRoutingEnhancements:
         context = self._context(key) if self._is_followup(task) else None
         perf = {name: 0.0 for name in ("catalog_ms", "embedding_ms", "selection_ms", "policy_ms", "total_ms")}
         a, f, p = _ACTIVE.set(self), self._followup.set(context), self._perf.set(perf)
+        d = self._decision.set(None)
         started = time.perf_counter()
         try:
             result = self._pre(user_message=user_message, task_id=task_id, turn_id=turn_id, session_id=session_id, **kwargs)
             perf["total_ms"] = round((time.perf_counter() - started) * 1000, 3)
             self._save_perf(perf)
-            self._save_context(key, task, result)
+            # The rendered prompt is presentation only, never a state protocol.
+            self._save_context(key, task, self._decision.get())
             return result
+        except Exception:
+            self._save_context(key, task, None)
+            raise
         finally:
+            self._decision.reset(d)
             self._perf.reset(p); self._followup.reset(f); _ACTIVE.reset(a)
 
     def followup_fallback(self, task: str, entries: list[dict[str, Any]], selected: list[dict[str, Any]], method: str):
@@ -95,8 +102,8 @@ class ProductionRoutingEnhancements:
         if selected or not context or not self._is_followup(task) or detect_explicit_skill_names(task, entries):
             return selected, method
         primary = str(context.get("previous_primary_skill") or "")
-        entry = next((e for e in entries if str(e.get("name") or "") == primary), None)
-        if not entry or str(entry.get("readiness_status") or "") in {BROKEN, DISABLED} or is_negated_name(task, primary):
+        entry = next((e for e in entries if isinstance(e, dict) and e.get("name") == primary), None)
+        if not self._usable_followup_entry(entry) or is_negated_name(task, primary):
             return selected, method
         score = score_entry(task, entry)
         if score.get("avoid_when", 0) < 0 or score.get("negation", 0) < 0:
@@ -137,8 +144,23 @@ class ProductionRoutingEnhancements:
 
     def policy_result(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         started = time.perf_counter()
-        try: return self._policy(*args, **kwargs)
-        finally: self._stage("policy_ms", started)
+        try:
+            result = self._policy(*args, **kwargs)
+            if _ACTIVE.get() is self:
+                # Capture only this turn's policy output, never a model reason,
+                # display suffix, another session's audit, or a command result.
+                self._decision.set(None)
+                if isinstance(result, dict) and isinstance(result.get("selections"), list):
+                    self._decision.set({
+                        "policy_status": result.get("policy_status"),
+                        "selections": [
+                            {"name": item.get("name"), "role": item.get("role")}
+                            for item in result["selections"][:5] if isinstance(item, dict)
+                        ],
+                    })
+            return result
+        finally:
+            self._stage("policy_ms", started)
 
     def _stage(self, name: str, started: float) -> None:
         perf = self._perf.get()
@@ -423,25 +445,83 @@ class ProductionRoutingEnhancements:
     def _session_key(self, session_id: str) -> str:
         return hashlib.sha256(str(session_id).encode()).hexdigest()[:24] if str(session_id or "").strip() else ""
 
-    def _context(self, key: str):
-        if not key: return None
-        state=self._get(_CONTEXT_KEY); scope=str(getattr(self.runtime.profile,"scope_token",""))[:200]
-        if state.get("profile_scope")!=scope or not isinstance(state.get("sessions"),dict): return None
-        value=state["sessions"].get(key); return deepcopy(value) if isinstance(value,dict) else None
+    @staticmethod
+    def _usable_followup_entry(entry: Any) -> bool:
+        return (isinstance(entry, dict)
+                and entry.get("readiness_status", UNKNOWN) in {READY, UNKNOWN}
+                and entry.get("setup_needed", False) is False
+                and entry.get("policy_metadata_complete", True) is True)
 
-    def _save_context(self, key: str, task: str, result: str | None) -> None:
-        if not key or not self._bool("followup_context_enabled",True): return
-        found=_SELECTION.findall(str(result or "")); primary=next((n.strip() for r,n in found if r.upper()=="PRIMARY"),""); supporting=[n.strip() for r,n in found if r.upper()=="SUPPORTING"][:4]
-        policy=(_POLICY.search(str(result or "")) or [None,"unknown"])[1]
-        scope=str(getattr(self.runtime.profile,"scope_token",""))[:200]; state=self._get(_CONTEXT_KEY)
-        if state.get("profile_scope")!=scope: state={"version":1,"profile_scope":scope,"sessions":{}}
-        sessions=state.get("sessions") if isinstance(state.get("sessions"),dict) else {}
-        if primary:
-            category=""; entry=next((e for e in self.runtime._snapshot().get("entries",[]) if str(e.get("name") or "")==primary),None)
-            if isinstance(entry,dict): category=str(entry.get("category") or "")[:100]
-            sessions[key]={"previous_primary_skill":primary[:200],"previous_supporting_skills":supporting,"previous_routing_category":category,"previous_policy_status":str(policy)[:30],"timestamp":_now()}
-        elif not self._is_followup(task): sessions.pop(key,None)
-        ordered=sorted(sessions.items(),key=lambda x:str(x[1].get("timestamp") or "")); state["sessions"]=dict(ordered[-self._int("followup_context_max_sessions",32,4,128):]); self._set(_CONTEXT_KEY,state)
+    def _followup_catalog(self) -> dict[str, dict[str, Any]]:
+        try:
+            entries = self.runtime._snapshot().get("entries", [])
+            if not isinstance(entries, list):
+                return {}
+            return {entry["name"]: entry for entry in entries
+                    if self._usable_followup_entry(entry) and isinstance(entry.get("name"), str)
+                    and 0 < len(entry["name"]) <= 200
+                    and not any(ord(c) < 32 for c in entry["name"])}
+        except Exception:
+            return {}
+
+    def _context(self, key: str):
+        if not key:
+            return None
+        with self._context_lock:
+            state = self._get(_CONTEXT_KEY)
+            scope = str(getattr(self.runtime.profile, "scope_token", ""))[:200]
+            if state.get("profile_scope") != scope or not isinstance(state.get("sessions"), dict):
+                return None
+            value = state["sessions"].get(key)
+        if not isinstance(value, dict):
+            return None
+        primary = value.get("previous_primary_skill")
+        if not isinstance(primary, str) or primary not in self._followup_catalog():
+            # Do not guess by stripping suffixes from legacy corrupt state.
+            return None
+        if value.get("previous_policy_status") not in {"valid", "adjusted", "degraded"}:
+            return None
+        return deepcopy(value)
+
+    def _save_context(self, key: str, task: str, decision: dict[str, Any] | None) -> None:
+        """Persist exact catalog identities from structured policy output only."""
+        del task
+        if not key or not self._bool("followup_context_enabled", True):
+            return
+        catalog = self._followup_catalog()
+        policy = decision.get("policy_status") if isinstance(decision, dict) else None
+        rows = decision.get("selections") if isinstance(decision, dict) else None
+        primary = ""
+        supporting: list[str] = []
+        if (policy in {"valid", "adjusted", "degraded"} and isinstance(rows, list)
+                and 0 < len(rows) <= 5 and all(isinstance(row, dict)
+                    and isinstance(row.get("name"), str) and row["name"] in catalog
+                    and row.get("role") in {"primary", "supporting"} for row in rows)):
+            primaries = [row["name"] for row in rows if row["role"] == "primary"]
+            if len(primaries) == 1:
+                primary = primaries[0]
+                supporting = list(dict.fromkeys(row["name"] for row in rows
+                                  if row["role"] == "supporting" and row["name"] != primary))[:4]
+        scope = str(getattr(self.runtime.profile, "scope_token", ""))[:200]
+        # Serialize this runtime's read/modify/write across concurrent sessions.
+        with self._context_lock:
+            state = self._get(_CONTEXT_KEY)
+            sessions = state.get("sessions") if state.get("profile_scope") == scope else {}
+            sessions = {k: v for k, v in sessions.items() if isinstance(k, str) and isinstance(v, dict)} if isinstance(sessions, dict) else {}
+            if primary:
+                sessions[key] = {
+                    "previous_primary_skill": primary,
+                    "previous_supporting_skills": supporting,
+                    "previous_routing_category": str(catalog[primary].get("category") or "")[:100],
+                    "previous_policy_status": policy,
+                    "timestamp": _now(),
+                }
+            else:
+                # Blocked/error/no-match turns cannot keep stale executable context.
+                sessions.pop(key, None)
+            ordered = sorted(sessions.items(), key=lambda item: str(item[1].get("timestamp") or ""))
+            self._set(_CONTEXT_KEY, {"version": 1, "profile_scope": scope,
+                "sessions": dict(ordered[-self._int("followup_context_max_sessions", 32, 4, 128):])})
 
     def _get(self,key:str)->dict[str,Any]:
         try: value=self.ctx.state.get(key,default={})

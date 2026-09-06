@@ -40,8 +40,8 @@
     {"id":"explicit_boundary_negative","category":"explicit","task":"The token xhumanizerx is not a skill request.","expected":[]},
     {"id":"explicit_multiple_no_noise","category":"explicit","task":"Use pdf and docx for comparison.","expected":[{"name":"pdf","role":"primary"},{"name":"docx","role":"supporting"}]},
 
-    {"id":"negative_setup_explicit","category":"negative","task":"Use setup-tool explicitly.","expected":[{"name":"setup-tool","role":"primary"}]},
-    {"id":"negative_missing_explicit","category":"negative","task":"Use missing-tool explicitly.","expected":[{"name":"missing-tool","role":"primary"}]},
+    {"id":"negative_setup_explicit","category":"negative","task":"Use setup-tool explicitly.","expected":[]},
+    {"id":"negative_missing_explicit","category":"negative","task":"Use missing-tool explicitly.","expected":[]},
     {"id":"negative_broken_explicit","category":"negative","task":"Use broken-tool explicitly.","expected":[]},
     {"id":"negative_disabled_explicit","category":"negative","task":"Use disabled-tool explicitly.","expected":[]},
     {"id":"negative_ready_floor","category":"negative","task":"A completely unrelated request.","expected":[]},
