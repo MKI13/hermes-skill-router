@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from .audit import SkillExecutionAudit
-from .catalog import base_plan_entry, scan_catalog
+from .catalog import base_plan_entry, readiness_metadata, scan_catalog
 from .compat import HermesCompatibility
 from .enforcement import SkillExecutionGuard
 from .embedding import EmbeddingCatalogRouter
@@ -385,15 +385,6 @@ class SkillRouterRuntime:
                 changed = catalog.get("catalog_hash") != snapshot.get("catalog_hash")
                 self._last_scan_monotonic = time.monotonic()
                 self._catalog_pending_refresh = False
-                if not changed:
-                    current_snapshot = {
-                        **snapshot,
-                        "catalog_scanned_at": _utc_now(),
-                        "reader_mode": catalog.get("reader_mode", "unknown"),
-                    }
-                    self._save_snapshot(current_snapshot)
-                    return False, catalog, current_snapshot, self._catalog_generation
-
                 previous = {
                     str(entry.get("name")): entry
                     for entry in snapshot.get("entries", [])
@@ -402,19 +393,34 @@ class SkillRouterRuntime:
                 entries: list[dict[str, Any]] = []
                 for record in catalog.get("skills", []):
                     existing = previous.get(record["name"])
-                    if existing and existing.get("content_hash") == record.get("content_hash"):
+                    if (
+                        existing
+                        and existing.get("content_hash") == record.get("content_hash")
+                        and existing.get("policy_metadata_complete") is not False
+                    ):
                         entries.append({
                             **existing,
-                            "readiness_status": record.get("readiness_status", UNKNOWN),
-                            "readiness_hash": record.get("readiness_hash", ""),
-                            "setup_needed": bool(record.get("setup_needed")),
-                            "requirements": record.get("requirements", {}),
-                            "dependency_checks": record.get("dependency_checks", []),
-                            "readiness_reasons": record.get("readiness_reasons", []),
+                            **readiness_metadata(record),
                             "policy_metadata_complete": True,
                         })
                     else:
                         entries.append(base_plan_entry(record))
+
+                if not changed:
+                    # Old snapshots can have the current catalog hash but lack v2
+                    # evidence. Repair from this scan, not by inventing readiness
+                    # or forcing another scan/model call on every message.
+                    current_snapshot = {
+                        **snapshot,
+                        "entries": entries,
+                        "catalog_scanned_at": _utc_now(),
+                        "reader_mode": catalog.get("reader_mode", "unknown"),
+                    }
+                    if entries != snapshot.get("entries", []):
+                        self._catalog_generation += 1
+                    self._save_snapshot(current_snapshot)
+                    return False, catalog, current_snapshot, self._catalog_generation
+
                 new_snapshot = {
                     **snapshot,
                     "profile": self.profile.name,
@@ -1302,12 +1308,7 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "works_with": [str(value)[:200] for value in entry.get("works_with", [])[:8]],
             "alternatives": [str(value)[:200] for value in entry.get("alternatives", [])[:8]],
             "analysis": entry.get("analysis", "deterministic"),
-            "readiness_status": entry.get("readiness_status", UNKNOWN),
-            "readiness_hash": entry.get("readiness_hash", ""),
-            "setup_needed": bool(entry.get("setup_needed")),
-            "requirements": entry.get("requirements", {}),
-            "dependency_checks": entry.get("dependency_checks", []),
-            "readiness_reasons": entry.get("readiness_reasons", []),
+            **readiness_metadata(entry),
             "policy_metadata_complete": entry.get("policy_metadata_complete", True),
             "openviking_name": entry.get("openviking_name", ""),
             "openviking_hash": entry.get("openviking_hash", ""),
@@ -1330,6 +1331,7 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "requirements": entry.get("requirements", {}),
             "alternatives": entry.get("alternatives", []),
             "policy_metadata_complete": entry.get("policy_metadata_complete", True),
+            "readiness_details_omitted": True,
             "analysis": "deterministic",
         }
         for entry in compact["entries"]
@@ -1344,6 +1346,7 @@ def _fit_snapshot(snapshot: dict[str, Any], max_bytes: int) -> dict[str, Any]:
             "content_hash": entry.get("content_hash", ""),
             "analysis": "deterministic",
             "policy_metadata_complete": False,
+            "readiness_details_omitted": True,
         })
         if size(compact) > max_bytes:
             compact["entries"].pop()

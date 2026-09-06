@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 import re
@@ -151,6 +152,29 @@ def _bounded_int(value: Any, minimum: int, maximum: int, default: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def readiness_metadata(record: dict[str, Any]) -> dict[str, Any]:
+    """Copy only passive readiness evidence, never skill content or config values.
+
+    Use the same projection for initial plans, cached analysis and compaction.
+    Missing v2 evidence stays unmeasured (None), not invented as a current check.
+    A fresh record clears stale details and any prior compaction marker.
+    """
+    return deepcopy({
+        "readiness_status": record.get("readiness_status", UNKNOWN),
+        "readiness_hash": record.get("readiness_hash", ""),
+        "setup_needed": bool(record.get("setup_needed")),
+        "requirements": record.get("requirements", {}),
+        "dependency_checks": record.get("dependency_checks", []),
+        "readiness_reasons": record.get("readiness_reasons", []),
+        "readiness_version": record.get("readiness_version"),
+        "missing_dependencies": record.get("missing_dependencies"),
+        "unknown_dependencies": record.get("unknown_dependencies"),
+        "setup_requirements": record.get("setup_requirements"),
+        "readiness_summary": record.get("readiness_summary"),
+        "readiness_details_omitted": record.get("readiness_details_omitted") is True,
+    })
+
+
 def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
     """Build a deterministic plan entry used until model analysis completes."""
     content = str(record.get("content") or "")
@@ -175,12 +199,7 @@ def base_plan_entry(record: dict[str, Any]) -> dict[str, Any]:
         "keywords": terms[:40],
         "works_with": _strings(record.get("related_skills"))[:12],
         "alternatives": [],
-        "readiness_status": record.get("readiness_status", UNKNOWN),
-        "readiness_hash": record.get("readiness_hash", ""),
-        "setup_needed": bool(record.get("setup_needed")),
-        "requirements": record.get("requirements", {}),
-        "dependency_checks": record.get("dependency_checks", []),
-        "readiness_reasons": record.get("readiness_reasons", []),
+        **readiness_metadata(record),
         "policy_metadata_complete": True,
         "analysis": "deterministic",
     }
