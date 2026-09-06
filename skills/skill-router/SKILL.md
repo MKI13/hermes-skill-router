@@ -59,7 +59,11 @@ Routing modes live under `plugins.entries.skill-router.settings.routing_mode`:
 - `hybrid` or `embedding`: deterministic explicit-request handling plus direct local Ollama embeddings with deterministic fail-open;
 - `model`: auxiliary-model selection with deterministic fallback.
 
-All routes pass through the deterministic policy gate. The policy remains authoritative for readiness, dependency expansion, alternatives, role normalization, ordering, and the skill limit. Confidence-aware comparisons do not waive these checks. An explicit request does not make a broken or disabled skill executable.
+All routes pass through the deterministic policy gate. The policy remains authoritative for readiness, dependency expansion, alternatives, role normalization, ordering, and the skill limit. Confidence-aware comparisons do not waive these checks.
+
+An explicit request does not make a `broken`, `disabled`, `dependency_missing`, or `setup_required` skill executable. A setup-needed flag also prevents executable selection. Diagnose the unavailable workflow with `inspect`; do not silently substitute another workflow for an explicit unavailable request or install missing prerequisites automatically. `unknown` is not the same as missing and remains eligible subject to the normal policy.
+
+Skill-name exclusions take precedence over positive mentions and cannot be bypassed by model/embedding output or required-skill expansion. Bounded German postfix forms such as “Nutze arxiv nicht” are covered along with prefix exclusions; lexical rules are not a complete language understanding guarantee.
 
 The Router never routes an MCP server directly. An MCP-backed workflow must be represented by a Hermes skill that declares `requirements.mcps`. The bundled `codebase-memory` skill is the reference integration for the `codebase-memory` MCP identity.
 
@@ -67,7 +71,9 @@ The Router never routes an MCP server directly. An MCP-backed workflow must be r
 
 The Router keeps a minimal profile- and session-scoped routing context for short referential follow-ups such as “mach weiter”, “teste es”, or “korrigiere das”. Only routing metadata is retained: previous primary/supporting skill names, routing category, policy status, timestamp, and an opaque session key.
 
-Continuity is used only when normal routing abstains and never overrides explicit skill requests, skill-name negation, `avoid_when`, broken/disabled readiness, or the policy gate. Clear topic changes discard previous routing context.
+Context comes from the current turn's structured policy result, never by parsing rendered prompt lines. Stored names must exactly match usable catalog identities. Display markers such as `readiness-unknown` are not part of a skill name. Legacy malformed identities are ignored, not guessed by stripping text.
+
+Continuity is used only when normal routing abstains and never overrides explicit skill requests, skill-name negation, `avoid_when`, unavailable readiness, or the policy gate. Clear topic changes, failed/blocked decisions and no-match decisions discard stale workflow context. Continuity is not evidence that the previous skill was loaded successfully.
 
 ## Local Embeddings
 
@@ -79,7 +85,7 @@ Numeric loopback HTTP origin only, no proxy, no redirects, bounded response size
 
 Use the bundled skill for repository structure, code architecture, symbols, dependencies, implementation lookup, impact analysis, and grounded context before development work. It depends on the active profile's exact `codebase-memory` MCP configuration. The Router does not start or reconfigure that MCP.
 
-The canary requires an available routing skill and a configured/enabled MCP before its Codebase-Memory checks report PASS. An unavailable side yields WARN and skipped continuity checks. Passive MCP discovery is not a real search or end-to-end MCP execution test.
+The canary requires a ready routing skill and a configured/enabled MCP before its Codebase-Memory checks report PASS. An unavailable side yields WARN and skipped continuity checks. Passive MCP discovery is not a real search or end-to-end MCP execution test.
 
 ## Diagnostics and Rollout Check
 
@@ -116,13 +122,15 @@ Blocked plans cannot claim that an intermediate primary replacement became execu
 ## Procedure
 
 1. Read the injected `[Skill Router]` block before starting the task.
-2. Load every validated skill with `skill_view` in the listed order.
+2. Load every validated skill with actual `skill_view` tool calls in the listed order. Printed call syntax or a verbal claim is not a tool invocation.
 3. Treat the Primary Skill as the controlling workflow; merge Supporting Skills only where compatible.
-4. Respect setup/readiness warnings before depending on a skill.
-5. Before rollout, review the target profile and run `rollout-check`, `doctor`, and `canary`; obtain real isolated-profile validation separately.
+4. Diagnose unavailable skills instead of treating their documents as executable recommendations.
+5. Before rollout, review the existing target profile and run `rollout-check`, `doctor`, and `canary`; obtain real isolated-profile validation separately. Verify all main/auxiliary model routes before a local-only run.
 6. Diagnose bad routing with `recommend`, `inspect`, `audit last`, `quality last`, and `performance`.
 7. Use `refresh` after manual skill changes not reflected by lifecycle events.
 
+For the repair's detailed acceptance procedure, see [Live-routing retest](../../docs/live-routing-retest.md). Repository fixtures are not a successful local-model execution test.
+
 ## Pitfalls
 
-Never invent installed names or reuse another profile's catalog, MCP configuration, follow-up context, audit, quality, or learning state. Never route directly to MCPs, replace a blocked policy with raw model output, or assume technical metrics prove a final answer correct. OpenViking remains optional and disabled by default; no profile rollout is automatic.
+Never invent installed names or reuse another profile's catalog, MCP configuration, follow-up context, audit, quality, or learning state. Never route directly to MCPs, replace a blocked policy with raw model output, or assume technical metrics prove a final answer correct. Do not auto-load skills or fabricate successful audit events to hide a model's failed tool calling. OpenViking remains optional and disabled by default; no profile rollout is automatic.
